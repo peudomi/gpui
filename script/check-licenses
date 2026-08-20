@@ -1,86 +1,53 @@
 #!/usr/bin/env bash
-
+# Audits the licenses of the entire dependency graph. Run as part of the
+# post-merge verification step in UPSTREAM.md.
+# Fails when:
+#   1) a local (path) crate is not Apache-2.0, or
+#   2) any package's license contains unavoidable copyleft
+#      (no permitted license among its OR-alternatives)
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
-check_manifest_for_agpl () {
-    local cargo_toml="$1"
+meta="$(mktemp)"
+trap 'rm -f "$meta"' EXIT
+cargo metadata --format-version 1 > "$meta"
 
-    if grep -Eiq '(agpl|affero)' "$cargo_toml"; then
-        echo "Error: $cargo_toml references an AGPL license. First-party crates must use LICENSE-GPL or LICENSE-APACHE."
-        exit 1
-    fi
+python3 - "$meta" <<'EOF'
+import json, re, sys
 
-    if grep -Eiq '^[[:space:]]*license-file[[:space:]]*=' "$cargo_toml"; then
-        echo "Error: $cargo_toml uses license-file. First-party crates must declare LICENSE-GPL or LICENSE-APACHE via the license field and symlink."
-        exit 1
-    fi
-}
+ALLOWED = re.compile(
+    r"^(Apache-2\.0( WITH LLVM-exception)?|MIT|MIT-0|BSD-[0-3]-Clause|ISC|Zlib|0BSD"
+    r"|Unlicense|CC0-1\.0|BSL-1\.0|Unicode-3\.0|Unicode-DFS-2016|NCSA|OpenSSL"
+    r"|MPL-2\.0|bzip2-1\.0\.6)$"
+)
 
-check_no_agpl_license_file () {
-    if [[ -e "LICENSE-AGPL" || -L "LICENSE-AGPL" ]]; then
-        echo "Error: LICENSE-AGPL exists. First-party code must use LICENSE-GPL or LICENSE-APACHE."
-        exit 1
-    fi
+def part_ok(part):
+    return bool(ALLOWED.match(part.strip()))
 
-    while IFS= read -r -d '' license_file; do
-        if [[ -e "$license_file" || -L "$license_file" ]]; then
-            echo "Error: $license_file exists. First-party crates must use LICENSE-GPL or LICENSE-APACHE."
-            exit 1
-        fi
-    done < <(git ls-files -z -- "*/LICENSE-AGPL")
-}
+def license_ok(expr):
+    expr = expr.replace("/", " OR ")
+    for and_part in re.split(r"\bAND\b", expr):
+        if not any(part_ok(p.strip("() ")) for p in re.split(r"\bOR\b", and_part)):
+            return False
+    return True
 
-check_symlink_target () {
-    local symlink_path="$1"
-    local license_name="$2"
+meta = json.load(open(sys.argv[1]))
+failures = []
+for p in meta["packages"]:
+    lic = p.get("license")
+    local = p["source"] is None
+    if local:
+        if lic != "Apache-2.0":
+            failures.append(f"local crate {p['name']}: license = {lic!r} (must be Apache-2.0)")
+    elif not lic:
+        failures.append(f"{p['name']}: missing license field (license-file: {p.get('license_file')})")
+    elif not license_ok(lic):
+        failures.append(f"{p['name']}: {lic}")
 
-    local target=$(readlink "$symlink_path")
-
-    local dir=$(dirname "$symlink_path")
-    local depth=$(echo "$dir" | tr '/' '\n' | wc -l)
-    local expected_prefix=""
-    for ((i = 0; i < depth; i++)); do
-        expected_prefix="../$expected_prefix"
-    done
-    local expected_target="${expected_prefix}${license_name}"
-
-    if [[ "$target" != "$expected_target" ]]; then
-        echo "Error: $symlink_path points to '$target' but should point to '$expected_target'"
-        exit 1
-    fi
-
-    if [[ ! -e "$symlink_path" ]]; then
-        echo "Error: $symlink_path is a broken symlink (target '$target' does not exist)"
-        exit 1
-    fi
-}
-
-check_license () {
-    local dir="$1"
-    local allowed_licenses=("LICENSE-GPL" "LICENSE-APACHE")
-
-    for license in "${allowed_licenses[@]}"; do
-        if [[ -L "$dir/$license" ]]; then
-            check_symlink_target "$dir/$license" "$license"
-            return 0
-        elif [[ -e "$dir/$license" ]]; then
-            echo "Error: $dir/$license exists but is not a symlink."
-            exit 1
-        fi
-    done
-
-    echo "Error: $dir does not contain a LICENSE-GPL or LICENSE-APACHE symlink"
-    exit 1
-}
-
-check_no_agpl_license_file
-
-git ls-files -z -- "Cargo.toml" "**/Cargo.toml" | while IFS= read -r -d '' cargo_toml; do
-    check_manifest_for_agpl "$cargo_toml"
-
-    if [[ "$cargo_toml" == */Cargo.toml ]]; then
-        check_license "$(dirname "$cargo_toml")"
-    fi
-done
-
-echo "check-licenses succeeded"
+if failures:
+    print("License audit failed:")
+    for f in failures:
+        print(f"  - {f}")
+    sys.exit(1)
+print(f"OK: {len(meta['packages'])} packages passed")
+EOF
