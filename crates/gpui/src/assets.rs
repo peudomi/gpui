@@ -131,3 +131,38 @@ mod tests {
         let _ = format!("{image:?}");
     }
 }
+
+/// A wide-gamut image: premultiplied RGBA half floats, encoded as extended
+/// sRGB. Components outside [0, 1] survive all the way to the framebuffer,
+/// so colors from wider gamuts (Display P3, Adobe RGB, ...) are not clipped.
+pub struct RenderImageWide {
+    /// The ID associated with this image
+    pub id: ImageId,
+    size: Size<DevicePixels>,
+    data: Vec<u8>,
+}
+
+impl RenderImageWide {
+    /// Create a new wide image from RGBA f16 little-endian bytes (8 bytes per pixel).
+    pub fn new(width: u32, height: u32, data: Vec<u8>) -> Option<Self> {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        if data.len() != width as usize * height as usize * 8 {
+            return None;
+        }
+        Some(Self {
+            id: ImageId(NEXT_ID.fetch_add(1, SeqCst)),
+            size: size(width.into(), height.into()),
+            data,
+        })
+    }
+
+    /// Get the size of this image, in pixels.
+    pub fn size(&self) -> Size<DevicePixels> {
+        self.size
+    }
+
+    /// The raw premultiplied RGBA f16 bytes of this image.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+}

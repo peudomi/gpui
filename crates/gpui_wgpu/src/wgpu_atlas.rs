@@ -196,6 +196,7 @@ impl WgpuAtlasState {
         let format = match kind {
             AtlasTextureKind::Monochrome => wgpu::TextureFormat::R8Unorm,
             AtlasTextureKind::Subpixel | AtlasTextureKind::Polychrome => self.color_texture_format,
+            AtlasTextureKind::PolychromeWide => wgpu::TextureFormat::Rgba16Float,
         };
 
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -297,6 +298,7 @@ struct WgpuAtlasStorage {
     monochrome_textures: AtlasTextureList<WgpuAtlasTexture>,
     subpixel_textures: AtlasTextureList<WgpuAtlasTexture>,
     polychrome_textures: AtlasTextureList<WgpuAtlasTexture>,
+    polychrome_wide_textures: AtlasTextureList<WgpuAtlasTexture>,
 }
 
 impl ops::Index<AtlasTextureKind> for WgpuAtlasStorage {
@@ -306,6 +308,7 @@ impl ops::Index<AtlasTextureKind> for WgpuAtlasStorage {
             AtlasTextureKind::Monochrome => &self.monochrome_textures,
             AtlasTextureKind::Subpixel => &self.subpixel_textures,
             AtlasTextureKind::Polychrome => &self.polychrome_textures,
+            AtlasTextureKind::PolychromeWide => &self.polychrome_wide_textures,
         }
     }
 }
@@ -316,6 +319,7 @@ impl ops::IndexMut<AtlasTextureKind> for WgpuAtlasStorage {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+            AtlasTextureKind::PolychromeWide => &mut self.polychrome_wide_textures,
         }
     }
 }
@@ -336,6 +340,7 @@ impl ops::Index<AtlasTextureId> for WgpuAtlasStorage {
             AtlasTextureKind::Monochrome => &self.monochrome_textures,
             AtlasTextureKind::Subpixel => &self.subpixel_textures,
             AtlasTextureKind::Polychrome => &self.polychrome_textures,
+            AtlasTextureKind::PolychromeWide => &self.polychrome_wide_textures,
         };
         textures[id.index as usize]
             .as_ref()
@@ -372,6 +377,7 @@ impl WgpuAtlasTexture {
         match self.format {
             wgpu::TextureFormat::R8Unorm => 1,
             wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm => 4,
+            wgpu::TextureFormat::Rgba16Float => 8,
             _ => 4,
         }
     }

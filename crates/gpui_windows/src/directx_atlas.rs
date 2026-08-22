@@ -22,6 +22,7 @@ struct DirectXAtlasState {
     monochrome_textures: AtlasTextureList<DirectXAtlasTexture>,
     polychrome_textures: AtlasTextureList<DirectXAtlasTexture>,
     subpixel_textures: AtlasTextureList<DirectXAtlasTexture>,
+    polychrome_wide_textures: AtlasTextureList<DirectXAtlasTexture>,
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
 }
 
@@ -42,6 +43,7 @@ impl DirectXAtlas {
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
             subpixel_textures: Default::default(),
+            polychrome_wide_textures: Default::default(),
             tiles_by_key: Default::default(),
         }))
     }
@@ -107,6 +109,7 @@ impl PlatformAtlas for DirectXAtlas {
             AtlasTextureKind::Monochrome => &mut lock.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut lock.polychrome_textures,
             AtlasTextureKind::Subpixel => &mut lock.subpixel_textures,
+            AtlasTextureKind::PolychromeWide => &mut lock.polychrome_wide_textures,
         };
 
         let Some(texture_slot) = textures.textures.get_mut(id.index as usize) else {
@@ -136,6 +139,7 @@ impl DirectXAtlasState {
                 AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
                 AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
                 AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
+                AtlasTextureKind::PolychromeWide => &mut self.polychrome_wide_textures,
             };
 
             if let Some(tile) = textures
@@ -186,6 +190,11 @@ impl DirectXAtlasState {
                 bind_flag = D3D11_BIND_SHADER_RESOURCE;
                 bytes_per_pixel = 4;
             }
+            AtlasTextureKind::PolychromeWide => {
+                pixel_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                bind_flag = D3D11_BIND_SHADER_RESOURCE;
+                bytes_per_pixel = 8;
+            }
         }
         let texture_desc = D3D11_TEXTURE2D_DESC {
             Width: size.width.0 as u32,
@@ -216,6 +225,7 @@ impl DirectXAtlasState {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
             AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
+            AtlasTextureKind::PolychromeWide => &mut self.polychrome_wide_textures,
         };
         let index = texture_list.free_list.pop();
         let view = unsafe {
@@ -256,6 +266,9 @@ impl DirectXAtlasState {
             AtlasTextureKind::Subpixel => {
                 &self.subpixel_textures[id.index as usize].as_ref().unwrap()
             }
+            AtlasTextureKind::PolychromeWide => &self.polychrome_wide_textures[id.index as usize]
+                .as_ref()
+                .unwrap(),
         }
     }
 }

@@ -155,7 +155,19 @@ impl MetalRenderer {
 
         let layer = metal::MetalLayer::new();
         layer.set_device(&device);
-        layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        layer.set_pixel_format(MTLPixelFormat::RGBA16Float);
+        // Wide-gamut rendering: the framebuffer holds sRGB-encoded values in
+        // half floats, tagged as extended sRGB so components outside [0, 1]
+        // reach the compositor instead of being clipped to the sRGB gamut.
+        if let Some(color_space) = core_graphics::color_space::CGColorSpace::create_with_name(
+            unsafe { core_graphics::color_space::kCGColorSpaceExtendedSRGB },
+        ) {
+            use metal::foreign_types::ForeignType as _;
+            unsafe {
+                let _: () = msg_send![&*layer, setColorspace: color_space.as_ptr()];
+            }
+            log::info!("metal layer: RGBA16Float + extended sRGB");
+        }
         // Support direct-to-display rendering if the window is not transparent
         // https://developer.apple.com/documentation/metal/managing-your-game-window-for-metal-in-macos
         layer.set_opaque(!transparent);
@@ -264,7 +276,7 @@ impl MetalRenderer {
             "paths_rasterization",
             "path_rasterization_vertex",
             "path_rasterization_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            MTLPixelFormat::RGBA16Float,
             PATH_SAMPLE_COUNT,
         );
         let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
@@ -273,7 +285,7 @@ impl MetalRenderer {
             "path_sprites",
             "path_sprite_vertex",
             "path_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            MTLPixelFormat::RGBA16Float,
         );
         let shadows_pipeline_state = build_pipeline_state(
             &device,
@@ -281,7 +293,7 @@ impl MetalRenderer {
             "shadows",
             "shadow_vertex",
             "shadow_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            MTLPixelFormat::RGBA16Float,
         );
         let quads_pipeline_state = build_pipeline_state(
             &device,
@@ -289,7 +301,7 @@ impl MetalRenderer {
             "quads",
             "quad_vertex",
             "quad_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            MTLPixelFormat::RGBA16Float,
         );
         let underlines_pipeline_state = build_pipeline_state(
             &device,
@@ -297,7 +309,7 @@ impl MetalRenderer {
             "underlines",
             "underline_vertex",
             "underline_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            MTLPixelFormat::RGBA16Float,
         );
         let monochrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -305,7 +317,7 @@ impl MetalRenderer {
             "monochrome_sprites",
             "monochrome_sprite_vertex",
             "monochrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            MTLPixelFormat::RGBA16Float,
         );
         let polychrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -313,7 +325,7 @@ impl MetalRenderer {
             "polychrome_sprites",
             "polychrome_sprite_vertex",
             "polychrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            MTLPixelFormat::RGBA16Float,
         );
         let surfaces_pipeline_state = build_pipeline_state(
             &device,
@@ -321,7 +333,7 @@ impl MetalRenderer {
             "surfaces",
             "surface_vertex",
             "surface_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            MTLPixelFormat::RGBA16Float,
         );
 
         let command_queue = device.new_command_queue();
@@ -408,7 +420,7 @@ impl MetalRenderer {
         let texture_descriptor = metal::TextureDescriptor::new();
         texture_descriptor.set_width(size.width.0 as u64);
         texture_descriptor.set_height(size.height.0 as u64);
-        texture_descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
+        texture_descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA16Float);
         texture_descriptor.set_storage_mode(metal::MTLStorageMode::Private);
         texture_descriptor
             .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
@@ -582,7 +594,7 @@ impl MetalRenderer {
         let texture_descriptor = metal::TextureDescriptor::new();
         texture_descriptor.set_width(size.width.0 as u64);
         texture_descriptor.set_height(size.height.0 as u64);
-        texture_descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        texture_descriptor.set_pixel_format(MTLPixelFormat::RGBA16Float);
         texture_descriptor
             .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
         texture_descriptor.set_storage_mode(metal::MTLStorageMode::Managed);
@@ -628,7 +640,7 @@ impl MetalRenderer {
             let texture_descriptor = metal::TextureDescriptor::new();
             texture_descriptor.set_width(size.width.0 as u64);
             texture_descriptor.set_height(size.height.0 as u64);
-            texture_descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+            texture_descriptor.set_pixel_format(MTLPixelFormat::RGBA16Float);
             texture_descriptor.set_usage(
                 metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
             );

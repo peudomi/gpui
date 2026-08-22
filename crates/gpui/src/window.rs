@@ -4607,6 +4607,62 @@ impl Window {
         });
     }
 
+    /// Paint a wide-gamut image (premultiplied RGBA f16, extended sRGB) into the
+    /// scene for the next frame at the current z-index. Unlike [`Self::paint_image`],
+    /// color components outside [0, 1] are preserved through to the framebuffer on
+    /// backends with a wide render target.
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    pub fn paint_image_wide(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        data: Arc<crate::RenderImageWide>,
+    ) -> Result<()> {
+        self.invalidator.debug_assert_paint();
+
+        let params = RenderImageParams {
+            image_id: data.id,
+            frame_index: 0,
+        };
+
+        let tile = self
+            .sprite_atlas
+            .get_or_insert_with(&crate::AtlasKey::WideImage(params), &mut || {
+                Ok(Some((data.size(), Cow::Borrowed(data.as_bytes()))))
+            })?
+            .expect("Callback above only returns Some");
+
+        let corner_radii = corner_radii
+            .clamp_radii_for_quad_size(bounds.size)
+            .scale(self.scale_factor());
+        let bounds = self.snap_bounds(bounds);
+        let content_mask = self.snapped_content_mask();
+        let opacity = self.element_opacity();
+
+        self.next_frame.scene.insert_primitive(PolychromeSprite {
+            order: 0,
+            pad: 0,
+            grayscale: false.into(),
+            bounds,
+            content_mask,
+            corner_radii,
+            tile,
+            opacity,
+        });
+        Ok(())
+    }
+
+    /// Removes a wide-gamut image from the sprite atlas.
+    pub fn drop_image_wide(&mut self, data: Arc<crate::RenderImageWide>) -> Result<()> {
+        let params = RenderImageParams {
+            image_id: data.id,
+            frame_index: 0,
+        };
+        self.sprite_atlas.remove(&crate::AtlasKey::WideImage(params));
+        Ok(())
+    }
+
     /// Removes an image from the sprite atlas.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
         for frame_index in 0..data.frame_count() {

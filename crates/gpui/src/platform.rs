@@ -1274,6 +1274,7 @@ pub enum AtlasKey {
     Glyph(RenderGlyphParams),
     Svg(RenderSvgParams),
     Image(RenderImageParams),
+    WideImage(RenderImageParams),
 }
 
 impl AtlasKey {
@@ -1298,6 +1299,7 @@ impl AtlasKey {
             }
             AtlasKey::Svg(_) => AtlasTextureKind::Monochrome,
             AtlasKey::Image(_) => AtlasTextureKind::Polychrome,
+            AtlasKey::WideImage(_) => AtlasTextureKind::PolychromeWide,
         }
     }
 }
@@ -1410,6 +1412,7 @@ pub enum AtlasTextureKind {
     Monochrome = 0,
     Polychrome = 1,
     Subpixel = 2,
+    PolychromeWide = 3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

@@ -19,6 +19,14 @@ source (`zed-industries/zed`):
   test-only logger hook in `sum_tree`.
 - The root workspace manifest, `.cargo` config, and repository scaffolding were
   trimmed accordingly.
+- Wide-gamut image rendering was added: `RenderImageWide` (premultiplied RGBA
+  f16, extended sRGB) with `Window::paint_image_wide` / `drop_image_wide`, an
+  `AtlasTextureKind::PolychromeWide` half-float atlas on every backend, an
+  `RGBA16Float` framebuffer tagged `kCGColorSpaceExtendedSRGB` on macOS/Metal,
+  and an `Rgba16Float` surface preference (with 8-bit fallback) on wgpu. The
+  Windows/DirectX swapchain still renders at 8 bits — moving it to an f16
+  swapchain needs an scRGB (linear) transfer pass and is left as a follow-up —
+  so wide images render there with colors clamped to sRGB.
 
 Further modifications will be tracked in this repository's git history.
 

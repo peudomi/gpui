@@ -347,7 +347,11 @@ impl WgpuRenderer {
         atlas: Arc<WgpuAtlas>,
     ) -> anyhow::Result<Self> {
         let surface_caps = surface.get_capabilities(&context.adapter);
+        // Wide-gamut rendering: prefer a half-float surface when the surface
+        // exposes one, so sRGB-encoded components outside [0, 1] survive to the
+        // compositor. Falls back to the usual 8-bit formats everywhere else.
         let preferred_formats = [
+            wgpu::TextureFormat::Rgba16Float,
             wgpu::TextureFormat::Bgra8Unorm,
             wgpu::TextureFormat::Rgba8Unorm,
         ];
@@ -363,6 +367,7 @@ impl WgpuRenderer {
                     context.adapter.get_info().name
                 )
             })?;
+        log::info!("wgpu surface format: {surface_format:?}");
 
         let pick_alpha_mode =
             |preferences: &[wgpu::CompositeAlphaMode]| -> anyhow::Result<wgpu::CompositeAlphaMode> {
