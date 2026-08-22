@@ -2,11 +2,19 @@
 
 cbuffer GlobalParams: register(b0) {
     float4 gamma_ratios;
+    // Rows of the linear `sRGB -> monitor gamut` matrix, used by wide_present
+    // when color_output_mode == 1.
+    float4 color_matrix_r0;
+    float4 color_matrix_r1;
+    float4 color_matrix_r2;
     float2 global_viewport_size;
     float grayscale_enhanced_contrast;
     float subpixel_enhanced_contrast;
     uint is_bgr;
-    uint3 global_pad;
+    // 0: linear scRGB into an fp16 swap chain (advanced color displays).
+    // 1: display-referred sRGB-encoded values into an 8-bit swap chain.
+    uint color_output_mode;
+    uint2 global_pad;
 };
 
 cbuffer BatchParams: register(b1) {
@@ -1265,4 +1273,73 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
     }
     color.a *= sprite.opacity * saturate(0.5 - distance);
     return color;
+}
+
+/*
+**
+**              Wide-gamut present
+**
+*/
+
+// The scene is rendered with sRGB-encoded values into a half-float offscreen
+// target, so blending matches the other backends. This final pass converts for
+// the swap chain according to color_output_mode:
+//
+// - scRGB (advanced color): apply the extended sRGB EOTF, sign-preserving, so
+//   components outside [0, 1] reach the compositor instead of being clipped;
+//   the OS maps them to the panel.
+// - display-referred (SDR): apply the EOTF, map linear sRGB into the monitor
+//   gamut with the ICC-derived matrix, clip, and re-encode for 8 bits. This is
+//   Chromium's SDR behavior: the profile's primaries define the gamut and an
+//   sRGB transfer is assumed.
+
+struct WidePresentVertexOutput {
+    float4 position: SV_Position;
+};
+
+WidePresentVertexOutput wide_present_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID) {
+    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+    WidePresentVertexOutput output;
+    output.position = float4(unit_vertex * float2(2., -2.) + float2(-1., 1.), 0., 1.);
+    return output;
+}
+
+float srgb_eotf_extended(float encoded) {
+    float magnitude = abs(encoded);
+    float decoded = magnitude <= 0.04045
+        ? magnitude / 12.92
+        : pow((magnitude + 0.055) / 1.055, 2.4);
+    return encoded < 0. ? -decoded : decoded;
+}
+
+float srgb_oetf(float linear_value) {
+    return linear_value <= 0.0031308
+        ? linear_value * 12.92
+        : 1.055 * pow(linear_value, 1. / 2.4) - 0.055;
+}
+
+float4 wide_present_fragment(WidePresentVertexOutput input): SV_Target {
+    float4 color = t_sprite.Load(int3(input.position.xy, 0));
+    float3 scene_linear = float3(
+        srgb_eotf_extended(color.r),
+        srgb_eotf_extended(color.g),
+        srgb_eotf_extended(color.b));
+    // The scene's alpha blending accumulates with DestBlendAlpha = ONE. An
+    // 8-bit UNORM target used to clamp that to 1 on every write; the float
+    // target doesn't, so clamp here before the compositor sees it. Alphas are
+    // non-negative, making one final clamp equivalent to per-write clamping.
+    float alpha = saturate(color.a);
+
+    if (color_output_mode == 1u) {
+        float3 display_linear = saturate(float3(
+            dot(color_matrix_r0.xyz, scene_linear),
+            dot(color_matrix_r1.xyz, scene_linear),
+            dot(color_matrix_r2.xyz, scene_linear)));
+        return float4(
+            srgb_oetf(display_linear.r),
+            srgb_oetf(display_linear.g),
+            srgb_oetf(display_linear.b),
+            alpha);
+    }
+    return float4(scene_linear, alpha);
 }

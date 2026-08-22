@@ -23,10 +23,19 @@ source (`zed-industries/zed`):
   f16, extended sRGB) with `Window::paint_image_wide` / `drop_image_wide`, an
   `AtlasTextureKind::PolychromeWide` half-float atlas on every backend, an
   `RGBA16Float` framebuffer tagged `kCGColorSpaceExtendedSRGB` on macOS/Metal,
-  and an `Rgba16Float` surface preference (with 8-bit fallback) on wgpu. The
-  Windows/DirectX swapchain still renders at 8 bits — moving it to an f16
-  swapchain needs an scRGB (linear) transfer pass and is left as a follow-up —
-  so wide images render there with colors clamped to sRGB.
+  and an `Rgba16Float` surface preference (with 8-bit fallback) on wgpu. On
+  Windows/DirectX, the scene renders into an offscreen `R16G16B16A16_FLOAT`
+  target (sRGB-encoded, so blending is unchanged) and a final `wide_present`
+  pass converts per the window's monitor, mirroring Chromium: with advanced
+  color (HDR/ACM) enabled it applies the sign-preserving extended sRGB EOTF
+  into an f16 swap chain tagged `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`
+  (scRGB) for the OS to color-manage; on SDR monitors it instead maps colors
+  through a 3x3 matrix derived from the monitor ICC profile's primaries
+  (transfer curve assumed sRGB, as Chromium does) into an 8-bit swap chain.
+  The mode re-resolves when the window moves between monitors and on
+  `WM_DISPLAYCHANGE`/`WM_SETTINGCHANGE` (HDR/ACM toggles, ICC profile
+  reassignment); `GPUI_COLOR_MODE=scrgb|srgb` overrides detection for
+  debugging.
 
 Further modifications will be tracked in this repository's git history.
 

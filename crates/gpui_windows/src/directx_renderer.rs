@@ -20,11 +20,25 @@ use windows::{
 };
 
 use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
+use crate::output_color::{self, OutputColorMode};
 use crate::*;
 use gpui::*;
+use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
 
 pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
-const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
+// Wide-gamut rendering: the scene is rendered with sRGB-encoded values into
+// half-float targets, so components outside [0, 1] survive blending. The
+// wide_present pass then converts for the swap chain, whose format depends on
+// the monitor's [`OutputColorMode`]: linear scRGB in an fp16 swap chain when
+// the OS color-manages (advanced color), display-referred 8-bit otherwise.
+const SCENE_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+fn swap_chain_format(mode: OutputColorMode) -> DXGI_FORMAT {
+    match mode {
+        OutputColorMode::ScRgb => DXGI_FORMAT_R16G16B16A16_FLOAT,
+        OutputColorMode::DisplayReferred { .. } => DXGI_FORMAT_B8G8R8A8_UNORM,
+    }
+}
 // This configuration is used for MSAA rendering on paths only, and it's guaranteed to be supported by DirectX 11.
 const PATH_MULTISAMPLE_COUNT: u32 = 4;
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
@@ -49,6 +63,11 @@ pub(crate) struct DirectXRenderer {
     width: u32,
     height: u32,
 
+    /// The monitor the window was last seen on, and how to present colors on
+    /// it. Re-resolved when the window moves to another monitor.
+    output_monitor: HMONITOR,
+    output_color_mode: OutputColorMode,
+
     /// Whether we want to skip drwaing due to device lost events.
     ///
     /// In that case we want to discard the first frame that we draw as we got reset in the middle of a frame
@@ -70,8 +89,16 @@ pub(crate) struct DirectXRendererDevices {
 struct DirectXResources {
     // Direct3D rendering objects
     swap_chain: IDXGISwapChain1,
+    swap_chain_format: DXGI_FORMAT,
+    back_buffer: Option<ID3D11Texture2D>,
+    back_buffer_view: Option<ID3D11RenderTargetView>,
+
+    // Offscreen scene target: all primitives render here (sRGB-encoded, like
+    // the other backends), then wide_present converts to linear scRGB while
+    // blitting into the swap chain back buffer.
     render_target: Option<ID3D11Texture2D>,
     render_target_view: Option<ID3D11RenderTargetView>,
+    render_target_srv: Option<ID3D11ShaderResourceView>,
 
     // Path intermediate textures (with MSAA)
     path_intermediate_texture: ID3D11Texture2D,
@@ -92,6 +119,7 @@ struct DirectXRenderPipelines {
     mono_sprites: PipelineState<MonochromeSprite>,
     subpixel_sprites: PipelineState<SubpixelSprite>,
     poly_sprites: PipelineState<PolychromeSprite>,
+    wide_present_pipeline: PipelineState<WidePresentInstance>,
 }
 
 struct DirectXGlobalElements {
@@ -164,8 +192,17 @@ impl DirectXRenderer {
             .context("Creating DirectX devices")?;
         let atlas = Arc::new(DirectXAtlas::new(&devices.device, &devices.device_context));
 
-        let resources = DirectXResources::new(&devices, 1, 1, hwnd, disable_direct_composition)
-            .context("Creating DirectX resources")?;
+        let (output_monitor, output_color_mode) = output_color::resolve_output_color_mode(hwnd);
+        log::info!("directx output color mode: {output_color_mode:?}");
+        let resources = DirectXResources::new(
+            &devices,
+            1,
+            1,
+            hwnd,
+            disable_direct_composition,
+            swap_chain_format(output_color_mode),
+        )
+        .context("Creating DirectX resources")?;
         let globals = DirectXGlobalElements::new(&devices.device)
             .context("Creating DirectX global elements")?;
         let pipelines = DirectXRenderPipelines::new(&devices.device)
@@ -193,6 +230,8 @@ impl DirectXRenderer {
             font_info: Self::get_font_info(),
             width: 1,
             height: 1,
+            output_monitor,
+            output_color_mode,
             skip_draws: false,
         })
     }
@@ -208,16 +247,22 @@ impl DirectXRenderer {
             .as_ref()
             .expect("devices missing")
             .device_context;
+        let (color_output_mode, color_matrix_rows) = match self.output_color_mode {
+            OutputColorMode::ScRgb => (0, output_color::IDENTITY_MATRIX),
+            OutputColorMode::DisplayReferred { matrix } => (1, matrix),
+        };
         update_buffer(
             device_context,
             self.globals.global_params_buffer.as_ref().unwrap(),
             &[GlobalParams {
                 gamma_ratios: self.font_info.gamma_ratios,
+                color_matrix_rows,
                 viewport_size: [resources.viewport.Width, resources.viewport.Height],
                 grayscale_enhanced_contrast: self.font_info.grayscale_enhanced_contrast,
                 subpixel_enhanced_contrast: self.font_info.subpixel_enhanced_contrast,
                 is_bgr: self.font_info.is_bgr as u32,
-                _pad: [0; 3],
+                color_output_mode,
+                _pad: [0; 2],
             }],
         )?;
         unsafe {
@@ -294,6 +339,7 @@ impl DirectXRenderer {
             self.height,
             self.hwnd,
             disable_direct_composition,
+            swap_chain_format(self.output_color_mode),
         )
         .context("Creating DirectX resources")?;
         let globals = DirectXGlobalElements::new(&devices.device)
@@ -337,6 +383,7 @@ impl DirectXRenderer {
             // and so likely do not have the textures anymore that are required for drawing
             return Ok(());
         }
+        self.update_output_color_mode()?;
         self.pre_draw(&match background_appearance {
             WindowBackgroundAppearance::Opaque => [1.0f32; 4],
             _ => [0.0f32; 4],
@@ -388,7 +435,96 @@ impl DirectXRenderer {
                 )
             })?;
         }
+        self.blit_to_back_buffer()?;
         self.present()
+    }
+
+    /// Forces the output color mode to be re-resolved on the next draw. Called
+    /// on display and system setting changes, which can toggle advanced color
+    /// or reassign the monitor's ICC profile without the window changing
+    /// monitors.
+    pub(crate) fn invalidate_output_color_mode(&mut self) {
+        self.output_monitor = HMONITOR::default();
+    }
+
+    /// Re-resolves the output color mode when the window has moved to another
+    /// monitor, recreating the swap chain if the required format changed.
+    fn update_output_color_mode(&mut self) -> Result<()> {
+        let monitor = unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST) };
+        if monitor == self.output_monitor {
+            return Ok(());
+        }
+        self.output_monitor = monitor;
+        let mode = output_color::monitor_color_mode(monitor);
+        if mode == self.output_color_mode {
+            return Ok(());
+        }
+        let format_changed =
+            swap_chain_format(mode) != swap_chain_format(self.output_color_mode);
+        self.output_color_mode = mode;
+        log::info!("directx output color mode: {mode:?}");
+        if format_changed {
+            self.recreate_swap_chain()
+                .context("Recreating swap chain after output color mode change")?;
+        }
+        Ok(())
+    }
+
+    fn recreate_swap_chain(&mut self) -> Result<()> {
+        let devices = self.devices.clone().context("devices missing")?;
+        unsafe { devices.device_context.OMSetRenderTargets(None, None) };
+        // The old swap chain must be released before creating a new one for
+        // the same window.
+        self.resources.take();
+        let resources = DirectXResources::new(
+            &devices,
+            self.width,
+            self.height,
+            self.hwnd,
+            self.direct_composition.is_none(),
+            swap_chain_format(self.output_color_mode),
+        )?;
+        if let Some(direct_composition) = &self.direct_composition {
+            direct_composition
+                .set_swap_chain(&resources.swap_chain)
+                .context("Setting swap chain for DirectComposition")?;
+        }
+        unsafe {
+            devices
+                .device_context
+                .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
+        }
+        self.resources = Some(resources);
+        Ok(())
+    }
+
+    /// Copies the offscreen scene target into the swap chain back buffer,
+    /// converting for the output color mode: to linear scRGB for an fp16
+    /// advanced-color swap chain (sign-preserving, so wide-gamut components
+    /// outside [0, 1] reach the compositor), or to display-referred sRGB-encoded
+    /// values via the monitor profile matrix for an 8-bit swap chain.
+    fn blit_to_back_buffer(&mut self) -> Result<()> {
+        let devices = self.devices.as_ref().context("devices missing")?;
+        let resources = self.resources.as_ref().context("resources missing")?;
+        unsafe {
+            devices
+                .device_context
+                .OMSetRenderTargets(Some(slice::from_ref(&resources.back_buffer_view)), None);
+        }
+        self.pipelines.wide_present_pipeline.draw_with_texture(
+            &devices.device_context,
+            slice::from_ref(&resources.render_target_srv),
+            slice::from_ref(&self.globals.sampler),
+            1,
+        )?;
+        unsafe {
+            // Unbind the scene texture so it can be bound as the render target
+            // again on the next frame.
+            let no_srv: [Option<ID3D11ShaderResourceView>; 1] = [None];
+            devices.device_context.VSSetShaderResources(0, Some(&no_srv));
+            devices.device_context.PSSetShaderResources(0, Some(&no_srv));
+        }
+        Ok(())
     }
 
     pub(crate) fn resize(&mut self, new_size: Size<DevicePixels>) -> Result<()> {
@@ -404,8 +540,13 @@ impl DirectXRenderer {
         let devices = self.devices.as_ref().context("devices missing")?;
         unsafe { devices.device_context.OMSetRenderTargets(None, None) };
         let resources = self.resources.as_mut().context("resources missing")?;
+        // All references to the swap chain's buffers must be released before
+        // calling ResizeBuffers.
+        resources.back_buffer.take();
+        resources.back_buffer_view.take();
         resources.render_target.take();
         resources.render_target_view.take();
+        resources.render_target_srv.take();
 
         // Resizing the swap chain requires a call to the underlying DXGI adapter, which can return the device removed error.
         // The app might have moved to a monitor that's attached to a different graphics device.
@@ -418,7 +559,7 @@ impl DirectXRenderer {
                     BUFFER_COUNT as u32,
                     width,
                     height,
-                    RENDER_TARGET_FORMAT,
+                    resources.swap_chain_format,
                     DXGI_SWAP_CHAIN_FLAG(0),
                 )
                 .context("Failed to resize swap chain")?;
@@ -573,7 +714,7 @@ impl DirectXRenderer {
                 0,
                 &resources.path_intermediate_msaa_texture,
                 0,
-                RENDER_TARGET_FORMAT,
+                SCENE_TARGET_FORMAT,
             );
             // Restore main render target
             devices
@@ -780,38 +921,46 @@ impl DirectXResources {
         height: u32,
         hwnd: HWND,
         disable_direct_composition: bool,
+        swap_chain_format: DXGI_FORMAT,
     ) -> Result<Self> {
         let swap_chain = if disable_direct_composition {
-            create_swap_chain(&devices.dxgi_factory, &devices.device, hwnd, width, height)?
+            create_swap_chain(
+                &devices.dxgi_factory,
+                &devices.device,
+                hwnd,
+                width,
+                height,
+                swap_chain_format,
+            )?
         } else {
             create_swap_chain_for_composition(
                 &devices.dxgi_factory,
                 &devices.device,
                 width,
                 height,
+                swap_chain_format,
             )?
         };
+        if swap_chain_format == DXGI_FORMAT_R16G16B16A16_FLOAT {
+            set_swap_chain_color_space(&swap_chain);
+        }
 
-        let (
-            render_target,
-            render_target_view,
-            path_intermediate_texture,
-            path_intermediate_srv,
-            path_intermediate_msaa_texture,
-            path_intermediate_msaa_view,
-            viewport,
-        ) = create_resources(devices, &swap_chain, width, height)?;
+        let resources = create_resources(devices, &swap_chain, width, height)?;
         set_rasterizer_state(&devices.device, &devices.device_context)?;
 
         Ok(Self {
             swap_chain,
-            render_target: Some(render_target),
-            render_target_view,
-            path_intermediate_texture,
-            path_intermediate_msaa_texture,
-            path_intermediate_msaa_view,
-            path_intermediate_srv,
-            viewport,
+            swap_chain_format,
+            back_buffer: Some(resources.back_buffer),
+            back_buffer_view: resources.back_buffer_view,
+            render_target: Some(resources.render_target),
+            render_target_view: resources.render_target_view,
+            render_target_srv: resources.render_target_srv,
+            path_intermediate_texture: resources.path_intermediate_texture,
+            path_intermediate_msaa_texture: resources.path_intermediate_msaa_texture,
+            path_intermediate_msaa_view: resources.path_intermediate_msaa_view,
+            path_intermediate_srv: resources.path_intermediate_srv,
+            viewport: resources.viewport,
         })
     }
 
@@ -822,22 +971,17 @@ impl DirectXResources {
         width: u32,
         height: u32,
     ) -> Result<()> {
-        let (
-            render_target,
-            render_target_view,
-            path_intermediate_texture,
-            path_intermediate_srv,
-            path_intermediate_msaa_texture,
-            path_intermediate_msaa_view,
-            viewport,
-        ) = create_resources(devices, &self.swap_chain, width, height)?;
-        self.render_target = Some(render_target);
-        self.render_target_view = render_target_view;
-        self.path_intermediate_texture = path_intermediate_texture;
-        self.path_intermediate_msaa_texture = path_intermediate_msaa_texture;
-        self.path_intermediate_msaa_view = path_intermediate_msaa_view;
-        self.path_intermediate_srv = path_intermediate_srv;
-        self.viewport = viewport;
+        let resources = create_resources(devices, &self.swap_chain, width, height)?;
+        self.back_buffer = Some(resources.back_buffer);
+        self.back_buffer_view = resources.back_buffer_view;
+        self.render_target = Some(resources.render_target);
+        self.render_target_view = resources.render_target_view;
+        self.render_target_srv = resources.render_target_srv;
+        self.path_intermediate_texture = resources.path_intermediate_texture;
+        self.path_intermediate_msaa_texture = resources.path_intermediate_msaa_texture;
+        self.path_intermediate_msaa_view = resources.path_intermediate_msaa_view;
+        self.path_intermediate_srv = resources.path_intermediate_srv;
+        self.viewport = resources.viewport;
         Ok(())
     }
 }
@@ -900,6 +1044,13 @@ impl DirectXRenderPipelines {
             16,
             create_blend_state(device)?,
         )?;
+        let wide_present_pipeline = PipelineState::new(
+            device,
+            "wide_present_pipeline",
+            ShaderModule::WidePresent,
+            1,
+            create_blend_state_disabled(device)?,
+        )?;
 
         Ok(Self {
             shadow_pipeline,
@@ -910,6 +1061,7 @@ impl DirectXRenderPipelines {
             mono_sprites,
             subpixel_sprites,
             poly_sprites,
+            wide_present_pipeline,
         })
     }
 }
@@ -972,11 +1124,13 @@ impl DirectXGlobalElements {
 #[repr(C)]
 struct GlobalParams {
     gamma_ratios: [f32; 4],
+    color_matrix_rows: [[f32; 4]; 3],
     viewport_size: [f32; 2],
     grayscale_enhanced_contrast: f32,
     subpixel_enhanced_contrast: f32,
     is_bgr: u32,
-    _pad: [u32; 3],
+    color_output_mode: u32,
+    _pad: [u32; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1184,6 +1338,14 @@ struct PathSprite {
     bounds: Bounds<ScaledPixels>,
 }
 
+/// The wide_present pass generates a full-screen quad from vertex ids alone;
+/// this instance buffer exists only to satisfy [`PipelineState`].
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct WidePresentInstance {
+    _unused: [f32; 4],
+}
+
 impl Drop for DirectXRenderer {
     fn drop(&mut self) {
         #[cfg(debug_assertions)]
@@ -1203,11 +1365,12 @@ fn create_swap_chain_for_composition(
     device: &ID3D11Device,
     width: u32,
     height: u32,
+    format: DXGI_FORMAT,
 ) -> Result<IDXGISwapChain1> {
     let desc = DXGI_SWAP_CHAIN_DESC1 {
         Width: width,
         Height: height,
-        Format: RENDER_TARGET_FORMAT,
+        Format: format,
         Stereo: false.into(),
         SampleDesc: DXGI_SAMPLE_DESC {
             Count: 1,
@@ -1230,13 +1393,14 @@ fn create_swap_chain(
     hwnd: HWND,
     width: u32,
     height: u32,
+    format: DXGI_FORMAT,
 ) -> Result<IDXGISwapChain1> {
     use windows::Win32::Graphics::Dxgi::DXGI_MWA_NO_ALT_ENTER;
 
     let desc = DXGI_SWAP_CHAIN_DESC1 {
         Width: width,
         Height: height,
-        Format: RENDER_TARGET_FORMAT,
+        Format: format,
         Stereo: false.into(),
         SampleDesc: DXGI_SAMPLE_DESC {
             Count: 1,
@@ -1255,23 +1419,30 @@ fn create_swap_chain(
     Ok(swap_chain)
 }
 
+struct CreatedResources {
+    back_buffer: ID3D11Texture2D,
+    back_buffer_view: Option<ID3D11RenderTargetView>,
+    render_target: ID3D11Texture2D,
+    render_target_view: Option<ID3D11RenderTargetView>,
+    render_target_srv: Option<ID3D11ShaderResourceView>,
+    path_intermediate_texture: ID3D11Texture2D,
+    path_intermediate_srv: Option<ID3D11ShaderResourceView>,
+    path_intermediate_msaa_texture: ID3D11Texture2D,
+    path_intermediate_msaa_view: Option<ID3D11RenderTargetView>,
+    viewport: D3D11_VIEWPORT,
+}
+
 #[inline]
 fn create_resources(
     devices: &DirectXRendererDevices,
     swap_chain: &IDXGISwapChain1,
     width: u32,
     height: u32,
-) -> Result<(
-    ID3D11Texture2D,
-    Option<ID3D11RenderTargetView>,
-    ID3D11Texture2D,
-    Option<ID3D11ShaderResourceView>,
-    ID3D11Texture2D,
-    Option<ID3D11RenderTargetView>,
-    D3D11_VIEWPORT,
-)> {
-    let (render_target, render_target_view) =
-        create_render_target_and_its_view(swap_chain, &devices.device)?;
+) -> Result<CreatedResources> {
+    let (back_buffer, back_buffer_view) =
+        create_back_buffer_and_its_view(swap_chain, &devices.device)?;
+    let (render_target, render_target_view, render_target_srv) =
+        create_scene_render_target(&devices.device, width, height)?;
     let (path_intermediate_texture, path_intermediate_srv) =
         create_path_intermediate_texture(&devices.device, width, height)?;
     let (path_intermediate_msaa_texture, path_intermediate_msaa_view) =
@@ -1284,26 +1455,80 @@ fn create_resources(
         MinDepth: 0.0,
         MaxDepth: 1.0,
     };
-    Ok((
+    Ok(CreatedResources {
+        back_buffer,
+        back_buffer_view,
         render_target,
         render_target_view,
+        render_target_srv,
         path_intermediate_texture,
         path_intermediate_srv,
         path_intermediate_msaa_texture,
         path_intermediate_msaa_view,
         viewport,
-    ))
+    })
 }
 
 #[inline]
-fn create_render_target_and_its_view(
+fn create_back_buffer_and_its_view(
     swap_chain: &IDXGISwapChain1,
     device: &ID3D11Device,
 ) -> Result<(ID3D11Texture2D, Option<ID3D11RenderTargetView>)> {
-    let render_target: ID3D11Texture2D = unsafe { swap_chain.GetBuffer(0) }?;
+    let back_buffer: ID3D11Texture2D = unsafe { swap_chain.GetBuffer(0) }?;
+    let mut back_buffer_view = None;
+    unsafe { device.CreateRenderTargetView(&back_buffer, None, Some(&mut back_buffer_view))? };
+    Ok((back_buffer, back_buffer_view))
+}
+
+#[inline]
+fn create_scene_render_target(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<(
+    ID3D11Texture2D,
+    Option<ID3D11RenderTargetView>,
+    Option<ID3D11ShaderResourceView>,
+)> {
+    let texture = unsafe {
+        let mut output = None;
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: SCENE_TARGET_FORMAT,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        device.CreateTexture2D(&desc, None, Some(&mut output))?;
+        output.unwrap()
+    };
     let mut render_target_view = None;
-    unsafe { device.CreateRenderTargetView(&render_target, None, Some(&mut render_target_view))? };
-    Ok((render_target, render_target_view))
+    unsafe { device.CreateRenderTargetView(&texture, None, Some(&mut render_target_view))? };
+    let mut shader_resource_view = None;
+    unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut shader_resource_view))? };
+    Ok((texture, render_target_view, shader_resource_view))
+}
+
+/// Tags the fp16 swap chain as scRGB. This is the color space DXGI defaults to
+/// for half-float swap chains, but setting it explicitly documents the intent
+/// and fails loudly if the runtime disagrees.
+fn set_swap_chain_color_space(swap_chain: &IDXGISwapChain1) {
+    let Ok(swap_chain3) = swap_chain.cast::<IDXGISwapChain3>() else {
+        log::warn!("IDXGISwapChain3 unavailable; relying on the default scRGB interpretation");
+        return;
+    };
+    match unsafe { swap_chain3.SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709) } {
+        Ok(()) => log::info!("directx swap chain: RGBA16Float + scRGB (extended sRGB, linear)"),
+        Err(err) => log::warn!("Failed to set swap chain color space to scRGB: {err}"),
+    }
 }
 
 #[inline]
@@ -1319,7 +1544,7 @@ fn create_path_intermediate_texture(
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
-            Format: RENDER_TARGET_FORMAT,
+            Format: SCENE_TARGET_FORMAT,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -1352,7 +1577,7 @@ fn create_path_intermediate_msaa_texture_and_view(
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
-            Format: RENDER_TARGET_FORMAT,
+            Format: SCENE_TARGET_FORMAT,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: PATH_MULTISAMPLE_COUNT,
                 Quality: D3D11_STANDARD_MULTISAMPLE_PATTERN.0 as u32,
@@ -1404,6 +1629,24 @@ fn create_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> {
     desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
     desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
     desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+    desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8;
+    unsafe {
+        let mut state = None;
+        device.CreateBlendState(&desc, Some(&mut state))?;
+        Ok(state.unwrap())
+    }
+}
+
+#[inline]
+fn create_blend_state_disabled(device: &ID3D11Device) -> Result<ID3D11BlendState> {
+    let mut desc = D3D11_BLEND_DESC::default();
+    desc.RenderTarget[0].BlendEnable = false.into();
+    desc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    desc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    desc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+    desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    desc.RenderTarget[0].DestBlend = D3D11_BLEND_ZERO;
+    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
     desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8;
     unsafe {
         let mut state = None;
@@ -1619,6 +1862,7 @@ pub(crate) mod shader_resources {
         MonochromeSprite,
         SubpixelSprite,
         PolychromeSprite,
+        WidePresent,
         EmojiRasterization,
     }
 
@@ -1692,6 +1936,10 @@ pub(crate) mod shader_resources {
                 ShaderModule::PolychromeSprite => match target {
                     ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
                     ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
+                },
+                ShaderModule::WidePresent => match target {
+                    ShaderTarget::Vertex => WIDE_PRESENT_VERTEX_BYTES,
+                    ShaderTarget::Fragment => WIDE_PRESENT_FRAGMENT_BYTES,
                 },
                 ShaderModule::EmojiRasterization => match target {
                     ShaderTarget::Vertex => EMOJI_RASTERIZATION_VERTEX_BYTES,
@@ -1783,6 +2031,7 @@ pub(crate) mod shader_resources {
                 ShaderModule::MonochromeSprite => "monochrome_sprite",
                 ShaderModule::SubpixelSprite => "subpixel_sprite",
                 ShaderModule::PolychromeSprite => "polychrome_sprite",
+                ShaderModule::WidePresent => "wide_present",
                 ShaderModule::EmojiRasterization => "emoji_rasterization",
             }
         }

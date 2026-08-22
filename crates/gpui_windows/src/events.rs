@@ -929,6 +929,12 @@ impl WindowsWindowInner {
     }
 
     fn handle_display_change_msg(&self, handle: HWND) -> Option<isize> {
+        // Display topology changes can flip advanced color on or off; make the
+        // renderer re-resolve its output color mode on the next draw.
+        self.state
+            .renderer
+            .borrow_mut()
+            .invalidate_output_color_mode();
         let new_monitor = unsafe { MonitorFromWindow(handle, MONITOR_DEFAULTTONULL) };
         if new_monitor.is_invalid() {
             log::error!("No monitor detected!");
@@ -1192,6 +1198,14 @@ impl WindowsWindowInner {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> Option<isize> {
+        // Setting changes include ICC profile reassignments and color
+        // management toggles; make the renderer re-resolve its output color
+        // mode on the next draw. Invalidation is a field write, the actual
+        // re-resolution is deferred and coalesced.
+        self.state
+            .renderer
+            .borrow_mut()
+            .invalidate_output_color_mode();
         if wparam.0 != 0 {
             self.state.click_state.system_update(wparam.0);
             self.state.border_offset.update(handle).log_err();
