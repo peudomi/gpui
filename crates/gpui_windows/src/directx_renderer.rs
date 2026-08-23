@@ -113,6 +113,8 @@ struct DirectXResources {
 struct DirectXRenderPipelines {
     shadow_pipeline: PipelineState<Shadow>,
     quad_pipeline: PipelineState<Quad>,
+    quad_premul_fragment: ID3D11PixelShader,
+    quad_blend_states: [ID3D11BlendState; 4],
     path_rasterization_pipeline: PipelineState<PathRasterizationSprite>,
     path_sprite_pipeline: PipelineState<PathSprite>,
     underline_pipeline: PipelineState<Underline>,
@@ -402,7 +404,10 @@ impl DirectXRenderer {
                 .map(|annotation| Annotation::new(annotation, HSTRING::from(batch.label())));
             match batch {
                 PrimitiveBatch::Shadows(range) => self.draw_shadows(range.start, range.len()),
-                PrimitiveBatch::Quads(range) => self.draw_quads(range.start, range.len()),
+                PrimitiveBatch::Quads(range) => {
+                    let quads = &scene.quads[range.clone()];
+                    self.draw_quads(quads, range.start)
+                }
                 PrimitiveBatch::Paths(range) => {
                     let paths = &scene.paths[range];
                     self.draw_paths_to_intermediate(paths)?;
@@ -459,8 +464,7 @@ impl DirectXRenderer {
         if mode == self.output_color_mode {
             return Ok(());
         }
-        let format_changed =
-            swap_chain_format(mode) != swap_chain_format(self.output_color_mode);
+        let format_changed = swap_chain_format(mode) != swap_chain_format(self.output_color_mode);
         self.output_color_mode = mode;
         log::info!("directx output color mode: {mode:?}");
         if format_changed {
@@ -521,8 +525,12 @@ impl DirectXRenderer {
             // Unbind the scene texture so it can be bound as the render target
             // again on the next frame.
             let no_srv: [Option<ID3D11ShaderResourceView>; 1] = [None];
-            devices.device_context.VSSetShaderResources(0, Some(&no_srv));
-            devices.device_context.PSSetShaderResources(0, Some(&no_srv));
+            devices
+                .device_context
+                .VSSetShaderResources(0, Some(&no_srv));
+            devices
+                .device_context
+                .PSSetShaderResources(0, Some(&no_srv));
         }
         Ok(())
     }
@@ -646,20 +654,47 @@ impl DirectXRenderer {
         )
     }
 
-    fn draw_quads(&mut self, start: usize, len: usize) -> Result<()> {
-        if len == 0 {
+    fn draw_quads(&mut self, quads: &[Quad], base: usize) -> Result<()> {
+        if quads.is_empty() {
             return Ok(());
         }
         let devices = self.devices.as_ref().context("devices missing")?;
-        self.pipelines.quad_pipeline.draw_range(
-            &devices.device_context,
-            self.globals
-                .batch_params_buffer
-                .as_ref()
-                .context("batch params buffer missing")?,
-            start as u32,
-            len as u32,
-        )
+        let batch_params_buffer = self
+            .globals
+            .batch_params_buffer
+            .as_ref()
+            .context("batch params buffer missing")?;
+
+        let mut start = 0;
+        while start < quads.len() {
+            let blend_mode = quads[start].blend_mode;
+            let mut end = start + 1;
+            while end < quads.len() && quads[end].blend_mode == blend_mode {
+                end += 1;
+            }
+            let blend_state = match blend_mode {
+                0 => None,
+                mode => self.pipelines.quad_blend_states.get(mode as usize - 1),
+            };
+            match blend_state {
+                None => self.pipelines.quad_pipeline.draw_range(
+                    &devices.device_context,
+                    batch_params_buffer,
+                    (base + start) as u32,
+                    (end - start) as u32,
+                )?,
+                Some(blend_state) => self.pipelines.quad_pipeline.draw_range_with(
+                    &devices.device_context,
+                    batch_params_buffer,
+                    (base + start) as u32,
+                    (end - start) as u32,
+                    &self.pipelines.quad_premul_fragment,
+                    blend_state,
+                )?,
+            }
+            start = end;
+        }
+        Ok(())
     }
 
     fn draw_paths_to_intermediate(&mut self, paths: &[Path<ScaledPixels>]) -> Result<()> {
@@ -1002,6 +1037,20 @@ impl DirectXRenderPipelines {
             64,
             create_blend_state(device)?,
         )?;
+        let quad_premul_fragment = {
+            let raw_shader = RawShaderBytes::new(ShaderModule::QuadPremul, ShaderTarget::Fragment)?;
+            create_fragment_shader(device, raw_shader.as_bytes())?
+        };
+        let quad_blend_states = [
+            create_quad_blend_state(device, D3D11_BLEND_ONE, D3D11_BLEND_ONE)?,
+            create_quad_blend_state(device, D3D11_BLEND_DEST_COLOR, D3D11_BLEND_INV_SRC_ALPHA)?,
+            create_quad_blend_state(device, D3D11_BLEND_ONE, D3D11_BLEND_INV_SRC_COLOR)?,
+            create_quad_blend_state(
+                device,
+                D3D11_BLEND_INV_DEST_COLOR,
+                D3D11_BLEND_INV_SRC_ALPHA,
+            )?,
+        ];
         let path_rasterization_pipeline = PipelineState::new(
             device,
             "path_rasterization_pipeline",
@@ -1055,6 +1104,8 @@ impl DirectXRenderPipelines {
         Ok(Self {
             shadow_pipeline,
             quad_pipeline,
+            quad_premul_fragment,
+            quad_blend_states,
             path_rasterization_pipeline,
             path_sprite_pipeline,
             underline_pipeline,
@@ -1270,6 +1321,25 @@ impl<T> PipelineState<T> {
         first_instance: u32,
         instance_count: u32,
     ) -> Result<()> {
+        self.draw_range_with(
+            device_context,
+            batch_params_buffer,
+            first_instance,
+            instance_count,
+            &self.fragment,
+            &self.blend_state,
+        )
+    }
+
+    fn draw_range_with(
+        &self,
+        device_context: &ID3D11DeviceContext,
+        batch_params_buffer: &ID3D11Buffer,
+        first_instance: u32,
+        instance_count: u32,
+        fragment: &ID3D11PixelShader,
+        blend_state: &ID3D11BlendState,
+    ) -> Result<()> {
         anyhow::ensure!(
             first_instance as usize + instance_count as usize <= self.buffer_size,
             "DirectX instance range exceeds the {} buffer",
@@ -1281,8 +1351,8 @@ impl<T> PipelineState<T> {
             slice::from_ref(&self.view),
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
             &self.vertex,
-            &self.fragment,
-            &self.blend_state,
+            fragment,
+            blend_state,
         );
         unsafe {
             device_context.DrawInstanced(4, instance_count, 0, 0);
@@ -1637,6 +1707,31 @@ fn create_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> {
     }
 }
 
+// Blend states for the fixed-function quad blend modes
+// (additive/multiply/screen/invert); their factors expect the premultiplied
+// source produced by `quad_premul_fragment`.
+#[inline]
+fn create_quad_blend_state(
+    device: &ID3D11Device,
+    src_blend: D3D11_BLEND,
+    dest_blend: D3D11_BLEND,
+) -> Result<ID3D11BlendState> {
+    let mut desc = D3D11_BLEND_DESC::default();
+    desc.RenderTarget[0].BlendEnable = true.into();
+    desc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    desc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    desc.RenderTarget[0].SrcBlend = src_blend;
+    desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    desc.RenderTarget[0].DestBlend = dest_blend;
+    desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+    desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8;
+    unsafe {
+        let mut state = None;
+        device.CreateBlendState(&desc, Some(&mut state))?;
+        Ok(state.unwrap())
+    }
+}
+
 #[inline]
 fn create_blend_state_disabled(device: &ID3D11Device) -> Result<ID3D11BlendState> {
     let mut desc = D3D11_BLEND_DESC::default();
@@ -1855,6 +1950,7 @@ pub(crate) mod shader_resources {
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
     pub(crate) enum ShaderModule {
         Quad,
+        QuadPremul,
         Shadow,
         Underline,
         PathRasterization,
@@ -1908,6 +2004,10 @@ pub(crate) mod shader_resources {
                 ShaderModule::Quad => match target {
                     ShaderTarget::Vertex => QUAD_VERTEX_BYTES,
                     ShaderTarget::Fragment => QUAD_FRAGMENT_BYTES,
+                },
+                ShaderModule::QuadPremul => match target {
+                    ShaderTarget::Vertex => QUAD_PREMUL_VERTEX_BYTES,
+                    ShaderTarget::Fragment => QUAD_PREMUL_FRAGMENT_BYTES,
                 },
                 ShaderModule::Shadow => match target {
                     ShaderTarget::Vertex => SHADOW_VERTEX_BYTES,
@@ -2024,6 +2124,7 @@ pub(crate) mod shader_resources {
         pub fn as_str(self) -> &'static str {
             match self {
                 ShaderModule::Quad => "quad",
+                ShaderModule::QuadPremul => "quad_premul",
                 ShaderModule::Shadow => "shadow",
                 ShaderModule::Underline => "underline",
                 ShaderModule::PathRasterization => "path_rasterization",

@@ -97,9 +97,24 @@ vertex QuadVertexOutput quad_vertex(uint unit_vertex_id [[vertex_id]],
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
 }
 
+static float4 quad_fragment_impl(QuadFragmentInput input, constant Quad *quads);
+
 fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
                               constant Quad *quads
                               [[buffer(QuadInputIndex_Quads)]]) {
+  return quad_fragment_impl(input, quads);
+}
+
+// Premultiplies coverage for the fixed-function blend-mode pipelines
+// (additive/multiply/screen/invert), whose factors expect premultiplied source.
+fragment float4 quad_fragment_premul(QuadFragmentInput input [[stage_in]],
+                                     constant Quad *quads
+                                     [[buffer(QuadInputIndex_Quads)]]) {
+  float4 color = quad_fragment_impl(input, quads);
+  return float4(color.rgb * color.a, color.a);
+}
+
+static float4 quad_fragment_impl(QuadFragmentInput input, constant Quad *quads) {
   Quad quad = quads[input.quad_id];
   float4 background_color = fill_color(quad.background, input.position.xy, quad.bounds,
     input.background_solid, input.background_color0, input.background_color1);

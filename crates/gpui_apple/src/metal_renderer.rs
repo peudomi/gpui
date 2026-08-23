@@ -8,7 +8,7 @@ use cocoa::{
 };
 use gpui::{
     AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path, Point,
-    PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
+    PrimitiveBatch, Quad, ScaledPixels, Scene, Size, point, size,
 };
 #[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
@@ -122,6 +122,7 @@ pub struct MetalRenderer {
     path_sprites_pipeline_state: metal::RenderPipelineState,
     shadows_pipeline_state: metal::RenderPipelineState,
     quads_pipeline_state: metal::RenderPipelineState,
+    quads_blend_pipeline_states: [metal::RenderPipelineState; 4],
     underlines_pipeline_state: metal::RenderPipelineState,
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
     polychrome_sprites_pipeline_state: metal::RenderPipelineState,
@@ -159,9 +160,11 @@ impl MetalRenderer {
         // Wide-gamut rendering: the framebuffer holds sRGB-encoded values in
         // half floats, tagged as extended sRGB so components outside [0, 1]
         // reach the compositor instead of being clipped to the sRGB gamut.
-        if let Some(color_space) = core_graphics::color_space::CGColorSpace::create_with_name(
-            unsafe { core_graphics::color_space::kCGColorSpaceExtendedSRGB },
-        ) {
+        if let Some(color_space) =
+            core_graphics::color_space::CGColorSpace::create_with_name(unsafe {
+                core_graphics::color_space::kCGColorSpaceExtendedSRGB
+            })
+        {
             use metal::foreign_types::ForeignType as _;
             unsafe {
                 let _: () = msg_send![&*layer, setColorspace: color_space.as_ptr()];
@@ -303,6 +306,40 @@ impl MetalRenderer {
             "quad_fragment",
             MTLPixelFormat::RGBA16Float,
         );
+        let build_quads_blend = |label, src_rgb, dst_rgb| {
+            build_blend_pipeline_state(
+                &device,
+                &library,
+                label,
+                "quad_vertex",
+                "quad_fragment_premul",
+                MTLPixelFormat::RGBA16Float,
+                src_rgb,
+                dst_rgb,
+            )
+        };
+        let quads_blend_pipeline_states = [
+            build_quads_blend(
+                "quads_additive",
+                metal::MTLBlendFactor::One,
+                metal::MTLBlendFactor::One,
+            ),
+            build_quads_blend(
+                "quads_multiply",
+                metal::MTLBlendFactor::DestinationColor,
+                metal::MTLBlendFactor::OneMinusSourceAlpha,
+            ),
+            build_quads_blend(
+                "quads_screen",
+                metal::MTLBlendFactor::One,
+                metal::MTLBlendFactor::OneMinusSourceColor,
+            ),
+            build_quads_blend(
+                "quads_invert",
+                metal::MTLBlendFactor::OneMinusDestinationColor,
+                metal::MTLBlendFactor::OneMinusSourceAlpha,
+            ),
+        ];
         let underlines_pipeline_state = build_pipeline_state(
             &device,
             &library,
@@ -353,6 +390,7 @@ impl MetalRenderer {
             path_sprites_pipeline_state,
             shadows_pipeline_state,
             quads_pipeline_state,
+            quads_blend_pipeline_states,
             underlines_pipeline_state,
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
@@ -684,9 +722,13 @@ impl MetalRenderer {
                 PrimitiveBatch::Shadows(range) => {
                     self.draw_shadows(range, instance_bindings, viewport_size, command_encoder)
                 }
-                PrimitiveBatch::Quads(range) => {
-                    self.draw_quads(range, instance_bindings, viewport_size, command_encoder)
-                }
+                PrimitiveBatch::Quads(range) => self.draw_quads(
+                    range,
+                    &scene.quads,
+                    instance_bindings,
+                    viewport_size,
+                    command_encoder,
+                ),
                 PrimitiveBatch::Paths(range) => {
                     let paths = &scene.paths[range];
                     command_encoder.end_encoding();
@@ -867,6 +909,7 @@ impl MetalRenderer {
     fn draw_quads(
         &self,
         quads: Range<usize>,
+        quads_data: &[Quad],
         instance_bindings: &InstanceBindings,
         viewport_size: Size<DevicePixels>,
         command_encoder: &metal::RenderCommandEncoderRef,
@@ -875,7 +918,6 @@ impl MetalRenderer {
             return;
         }
 
-        command_encoder.set_render_pipeline_state(&self.quads_pipeline_state);
         command_encoder.set_vertex_buffer(
             QuadInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -897,13 +939,30 @@ impl MetalRenderer {
             &viewport_size as *const Size<DevicePixels> as *const _,
         );
 
-        command_encoder.draw_primitives_instanced_base_instance(
-            metal::MTLPrimitiveType::Triangle,
-            0,
-            6,
-            quads.len() as u64,
-            quads.start as u64,
-        );
+        let mut start = quads.start;
+        while start < quads.end {
+            let blend_mode = quads_data[start].blend_mode;
+            let mut end = start + 1;
+            while end < quads.end && quads_data[end].blend_mode == blend_mode {
+                end += 1;
+            }
+            let pipeline_state = match blend_mode {
+                0 => &self.quads_pipeline_state,
+                mode => self
+                    .quads_blend_pipeline_states
+                    .get(mode as usize - 1)
+                    .unwrap_or(&self.quads_pipeline_state),
+            };
+            command_encoder.set_render_pipeline_state(pipeline_state);
+            command_encoder.draw_primitives_instanced_base_instance(
+                metal::MTLPrimitiveType::Triangle,
+                0,
+                6,
+                (end - start) as u64,
+                start as u64,
+            );
+            start = end;
+        }
     }
 
     fn draw_paths_from_intermediate(
@@ -1305,6 +1364,43 @@ fn build_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::SourceAlpha);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+
+    device
+        .new_render_pipeline_state(&descriptor)
+        .expect("could not create render pipeline state")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_blend_pipeline_state(
+    device: &metal::DeviceRef,
+    library: &metal::LibraryRef,
+    label: &str,
+    vertex_fn_name: &str,
+    fragment_fn_name: &str,
+    pixel_format: metal::MTLPixelFormat,
+    source_rgb_blend_factor: metal::MTLBlendFactor,
+    destination_rgb_blend_factor: metal::MTLBlendFactor,
+) -> metal::RenderPipelineState {
+    let vertex_fn = library
+        .get_function(vertex_fn_name, None)
+        .expect("error locating vertex function");
+    let fragment_fn = library
+        .get_function(fragment_fn_name, None)
+        .expect("error locating fragment function");
+
+    let descriptor = metal::RenderPipelineDescriptor::new();
+    descriptor.set_label(label);
+    descriptor.set_vertex_function(Some(vertex_fn.as_ref()));
+    descriptor.set_fragment_function(Some(fragment_fn.as_ref()));
+    let color_attachment = descriptor.color_attachments().object_at(0).unwrap();
+    color_attachment.set_pixel_format(pixel_format);
+    color_attachment.set_blending_enabled(true);
+    color_attachment.set_rgb_blend_operation(metal::MTLBlendOperation::Add);
+    color_attachment.set_alpha_blend_operation(metal::MTLBlendOperation::Add);
+    color_attachment.set_source_rgb_blend_factor(source_rgb_blend_factor);
+    color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
+    color_attachment.set_destination_rgb_blend_factor(destination_rgb_blend_factor);
     color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
 
     device

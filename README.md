@@ -36,6 +36,15 @@ source (`zed-industries/zed`):
   `WM_DISPLAYCHANGE`/`WM_SETTINGCHANGE` (HDR/ACM toggles, ICC profile
   reassignment); `GPUI_COLOR_MODE=scrgb|srgb` overrides detection for
   debugging.
+- Quad blend modes were added: `BlendMode { Normal, Additive, Multiply,
+  Screen, Invert }` on `PaintQuad` (`.blend_mode(…)`). Fixed-function blend
+  factors only — the quad fragment math is untouched (a `quad_fragment_premul`
+  entry point premultiplies coverage for the non-`Normal` modes) and instanced
+  quad draws split on mode changes. `Invert` with a white quad shows `1 - dst`,
+  which stays visible over any background (e.g. brush cursors). Honored by the
+  Metal (macOS) and DirectX (Windows) renderers; the wgpu backend keeps struct
+  layout parity but renders every mode as `Normal`. See
+  `examples/blend_modes.rs`.
 
 Further modifications will be tracked in this repository's git history.
 
