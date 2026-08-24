@@ -23,7 +23,5 @@ proptest = { workspace = true, optional = true }
 rand.workspace = true
 proptest.workspace = true
 
-
-
 [features]
 test-support = ["proptest"]
