@@ -515,8 +515,6 @@ struct Quad {
     Hsla border_color;
     Corners corner_radii;
     Edges border_widths;
-    uint blend_mode;
-    uint pad; // align to 8 bytes
 };
 
 struct QuadVertexOutput {
@@ -855,17 +853,6 @@ float4 quad_fragment(QuadFragmentInput input): SV_Target {
     }
 
     return color * float4(1.0, 1.0, 1.0, saturate(antialias_threshold - outer_sdf));
-}
-
-QuadVertexOutput quad_premul_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_InstanceID) {
-    return quad_vertex(vertex_id, instance_id);
-}
-
-// Premultiplies coverage for the fixed-function blend-mode pipelines
-// (additive/multiply/screen/invert), whose factors expect premultiplied source.
-float4 quad_premul_fragment(QuadFragmentInput input): SV_Target {
-    float4 color = quad_fragment(input);
-    return float4(color.rgb * color.a, color.a);
 }
 
 /*

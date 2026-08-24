@@ -541,8 +541,6 @@ pub struct Quad {
     pub border_color: Hsla,
     pub corner_radii: Corners<ScaledPixels>,
     pub border_widths: Edges<ScaledPixels>,
-    pub blend_mode: u32,
-    pub pad: u32, // align to 8 bytes
 }
 
 impl From<Quad> for Primitive {
@@ -591,31 +589,6 @@ impl From<Shadow> for Primitive {
     fn from(shadow: Shadow) -> Self {
         Primitive::Shadow(shadow)
     }
-}
-
-/// How a [`Quad`](crate::PaintQuad)'s color is combined with the pixels already
-/// rendered beneath it.
-///
-/// Only fixed-function blend modes are offered, so every mode composites
-/// antialiased coverage the same way `Normal` does. Currently honored by quads
-/// on the Metal (macOS) and DirectX (Windows) backends; the wgpu backend falls
-/// back to `Normal`.
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u32)]
-pub enum BlendMode {
-    /// Source-over alpha compositing.
-    #[default]
-    Normal = 0,
-    /// Adds the source color to the destination: `src·a + dst`.
-    Additive = 1,
-    /// Multiplies the source and destination colors: `dst·mix(1, src, a)`.
-    Multiply = 2,
-    /// Inverse-multiplies against the destination: `src·a + dst·(1 - src·a)`.
-    Screen = 3,
-    /// Inverts the destination weighted by the source color:
-    /// `src·a·(1 - dst) + dst·(1 - a)`. With a white source this shows `1 - dst`,
-    /// which stays visible over any background.
-    Invert = 4,
 }
 
 /// The style of a border.

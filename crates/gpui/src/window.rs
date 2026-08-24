@@ -6,8 +6,8 @@ use crate::Inspector;
 use crate::profiler;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
-    AsyncWindowContext, AtlasTile, AvailableSpace, Background, BlendMode, BorderStyle, Bounds,
-    BoxShadow, Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
+    AsyncWindowContext, AtlasTile, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow,
+    Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
     EntityId, EventEmitter, FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs,
     Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
@@ -4115,8 +4115,6 @@ impl Window {
             corner_radii: quad.corner_radii.scale(self.scale_factor()),
             border_widths: snapped_border_widths,
             border_style: quad.border_style,
-            blend_mode: quad.blend_mode as u32,
-            pad: 0,
         };
 
         if !quad.background.is_transparent() {
@@ -4661,8 +4659,7 @@ impl Window {
             image_id: data.id,
             frame_index: 0,
         };
-        self.sprite_atlas
-            .remove(&crate::AtlasKey::WideImage(params));
+        self.sprite_atlas.remove(&crate::AtlasKey::WideImage(params));
         Ok(())
     }
 
@@ -6852,8 +6849,6 @@ pub struct PaintQuad {
     pub border_color: Hsla,
     /// The style of the quad's borders.
     pub border_style: BorderStyle,
-    /// How the quad is blended with the content beneath it.
-    pub blend_mode: BlendMode,
 }
 
 impl PaintQuad {
@@ -6888,11 +6883,6 @@ impl PaintQuad {
             ..self
         }
     }
-
-    /// Sets the blend mode of the quad.
-    pub fn blend_mode(self, blend_mode: BlendMode) -> Self {
-        PaintQuad { blend_mode, ..self }
-    }
 }
 
 /// Creates a quad with the given parameters.
@@ -6911,7 +6901,6 @@ pub fn quad(
         border_widths: border_widths.into(),
         border_color: border_color.into(),
         border_style,
-        blend_mode: BlendMode::default(),
     }
 }
 
@@ -6924,7 +6913,6 @@ pub fn fill(bounds: impl Into<Bounds<Pixels>>, background: impl Into<Background>
         border_widths: (0.).into(),
         border_color: transparent_black(),
         border_style: BorderStyle::default(),
-        blend_mode: BlendMode::default(),
     }
 }
 
@@ -6941,7 +6929,6 @@ pub fn outline(
         border_widths: (1.).into(),
         border_color: border_color.into(),
         border_style,
-        blend_mode: BlendMode::default(),
     }
 }
 

@@ -525,10 +525,6 @@ struct Quad {
     border_color: Hsla,
     corner_radii: Corners,
     border_widths: Edges,
-    // Ignored by this backend: fixed-function quad blend modes are only
-    // honored by the Metal and DirectX renderers. Kept for layout parity.
-    blend_mode: u32,
-    pad: u32,
 }
 
 struct QuadVarying {

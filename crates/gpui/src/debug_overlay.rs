@@ -225,8 +225,6 @@ fn solid_quad(
         border_color: transparent_black(),
         corner_radii: Corners::default(),
         border_widths: Edges::default(),
-        blend_mode: 0,
-        pad: 0,
     }
 }
 
