@@ -37,6 +37,30 @@ source (`zed-industries/zed`):
   reassignment); `GPUI_COLOR_MODE=scrgb|srgb` overrides detection for
   debugging.
 
+- App-private platform drag sessions were added for Chrome-style tab tear-off.
+  `ExternalDragPayload::AppPrivate` starts an OS drag session carrying only a
+  per-app private pasteboard type (`app.gpui.private-drag.<bundle id>`) that
+  other applications do not accept; gpui windows register that type and synthesize an empty-path
+  `FileDropEvent::Entered` for it, and a platform-owned drag now restores its
+  in-app payload in any window of the app
+  (`PlatformOwnedDragState::Restored { window }`), not only the source window.
+  `Window::promote_active_drag_to_platform` hands the active drag to the
+  platform immediately instead of waiting for the pointer to leave the
+  viewport, and `FileDropEvent::SessionMoved` with
+  `App::set_platform_drag_moved_handler` reports the session's global pointer
+  position (from `draggingSession:movedToPoint:` on macOS). Supporting window
+  APIs: `PlatformWindow::move_to` (programmatic placement),
+  `PlatformWindow::set_accepts_drags` (a window dragged along with the pointer
+  opts out of drop destination routing), and `WindowKind::Overlay`, a
+  chrome-less, shadowless, non-activating always-on-top surface excluded from
+  drag destination routing and mouse hit-testing. All of this is implemented
+  on macOS; Windows/X11 map `Overlay` to their popup-style windows, the
+  Wayland backend declines `AppPrivate` sources, and the web backend rejects
+  `Overlay`.
+
+These changes are documented in detail, with code, rationale, and open
+questions, in [docs/fork](docs/fork/README.md).
+
 Further modifications will be tracked in this repository's git history.
 
 ## License
