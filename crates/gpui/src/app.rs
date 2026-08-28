@@ -664,6 +664,11 @@ impl GpuiMode {
     }
 }
 
+/// A handler invoked with the pointer's global position while a
+/// platform-owned drag session moves. The window is the session's source
+/// window, whose input dispatch delivers the movement.
+pub type PlatformDragMovedHandler = Box<dyn FnMut(Point<Pixels>, &mut Window, &mut App)>;
+
 struct PlatformOwnedDrag {
     source_window: WindowId,
     state: PlatformOwnedDragState,
@@ -671,9 +676,10 @@ struct PlatformOwnedDrag {
 
 enum PlatformOwnedDragState {
     Suspended(AnyDrag),
-    // A source-window drop consumes `active_drag` before AppKit ends the dragging session, so this
-    // marker can outlive the active drag and is cleaned up by `FileDropEvent::Ended`.
-    RestoredInSourceWindow,
+    // An in-window drop consumes `active_drag` before AppKit ends the dragging session, so this
+    // marker can outlive the active drag and is cleaned up by `FileDropEvent::Ended`. The window
+    // is the one the drag was restored into, which is not necessarily the source window.
+    Restored { window: WindowId },
 }
 
 /// Contains the state of the full application, and passed as a reference to a variety of callbacks.
@@ -686,6 +692,7 @@ pub struct App {
 
     pub(crate) actions: Rc<ActionRegistry>,
     pub(crate) active_drag: Option<AnyDrag>,
+    platform_drag_moved_handler: Option<PlatformDragMovedHandler>,
     platform_owned_drag: Option<PlatformOwnedDrag>,
     pub(crate) background_executor: BackgroundExecutor,
     pub(crate) foreground_executor: ForegroundExecutor,
@@ -810,6 +817,7 @@ impl App {
                 flushing_effects: false,
                 pending_updates: 0,
                 active_drag: None,
+                platform_drag_moved_handler: None,
                 platform_owned_drag: None,
                 background_executor,
                 foreground_executor,
@@ -2521,6 +2529,23 @@ impl App {
         self.active_drag.is_some()
     }
 
+    /// Registers a handler invoked with the pointer's global position while a
+    /// platform-owned drag session started by this app moves, wherever the
+    /// pointer is on screen. Pass `None` to clear it.
+    pub fn set_platform_drag_moved_handler(&mut self, handler: Option<PlatformDragMovedHandler>) {
+        self.platform_drag_moved_handler = handler;
+    }
+
+    pub(crate) fn platform_drag_moved(&mut self, position: Point<Pixels>, window: &mut Window) {
+        let Some(mut handler) = self.platform_drag_moved_handler.take() else {
+            return;
+        };
+        handler(position, window, self);
+        if self.platform_drag_moved_handler.is_none() {
+            self.platform_drag_moved_handler = Some(handler);
+        }
+    }
+
     /// Gets the cursor style of the currently active drag operation.
     pub fn active_drag_cursor_style(&self) -> Option<CursorStyle> {
         self.active_drag.as_ref().and_then(|drag| drag.cursor_style)
@@ -2531,8 +2556,11 @@ impl App {
         if self.active_drag.is_some() {
             self.active_drag = None;
             if self.platform_owned_drag.as_ref().is_some_and(|drag| {
-                drag.source_window == window.window_handle().window_id()
-                    && matches!(&drag.state, PlatformOwnedDragState::RestoredInSourceWindow)
+                matches!(
+                    &drag.state,
+                    PlatformOwnedDragState::Restored { window: restored }
+                        if *restored == window.window_handle().window_id()
+                )
             }) {
                 self.platform_owned_drag = None;
             }
@@ -2554,29 +2582,33 @@ impl App {
         true
     }
 
-    pub(crate) fn restore_platform_drag(&mut self, source_window: WindowId) -> bool {
-        let Some(platform_drag) = self
-            .platform_owned_drag
-            .as_mut()
-            .filter(|drag| drag.source_window == source_window)
-        else {
+    pub(crate) fn restore_platform_drag(&mut self, entering_window: WindowId) -> bool {
+        let Some(platform_drag) = self.platform_owned_drag.as_mut() else {
             return false;
         };
-        let state = std::mem::replace(
+        match std::mem::replace(
             &mut platform_drag.state,
-            PlatformOwnedDragState::RestoredInSourceWindow,
-        );
-        let PlatformOwnedDragState::Suspended(drag) = state else {
-            return false;
-        };
-        self.active_drag = Some(drag);
-        true
+            PlatformOwnedDragState::Restored {
+                window: entering_window,
+            },
+        ) {
+            PlatformOwnedDragState::Suspended(drag) => {
+                self.active_drag = Some(drag);
+                true
+            }
+            other => {
+                platform_drag.state = other;
+                false
+            }
+        }
     }
 
-    pub(crate) fn hand_restored_drag_to_platform(&mut self, source_window: WindowId) -> bool {
+    pub(crate) fn hand_restored_drag_to_platform(&mut self, exiting_window: WindowId) -> bool {
         let Some(platform_drag) = self.platform_owned_drag.as_mut().filter(|drag| {
-            drag.source_window == source_window
-                && matches!(&drag.state, PlatformOwnedDragState::RestoredInSourceWindow)
+            matches!(
+                &drag.state,
+                PlatformOwnedDragState::Restored { window } if *window == exiting_window
+            )
         }) else {
             return false;
         };

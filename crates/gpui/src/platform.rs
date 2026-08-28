@@ -819,6 +819,8 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn window_bounds(&self) -> WindowBounds;
     fn content_size(&self) -> Size<Pixels>;
     fn resize(&mut self, size: Size<Pixels>);
+    fn move_to(&mut self, _origin: Point<Pixels>) {}
+    fn set_accepts_drags(&self, _accepts: bool) {}
     fn scale_factor(&self) -> f32;
     fn appearance(&self) -> WindowAppearance;
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>>;
@@ -2050,6 +2052,12 @@ pub enum WindowKind {
     /// A window that appears above all other windows, usually used for alerts or popups
     /// use sparingly!
     PopUp,
+
+    /// A chrome-less overlay surface: no system decorations, corner rounding,
+    /// or shadow, non-activating, and above normal windows. For app-drawn
+    /// transient visuals such as drag previews. Platforms without a dedicated
+    /// implementation treat it like [`WindowKind::PopUp`] or a normal window.
+    Overlay,
 
     /// A parent-anchored, platform-native popup window for menus, comboboxes, context menus and
     /// tooltips. Unlike [`WindowKind::PopUp`], it is positioned relative to a parent window.

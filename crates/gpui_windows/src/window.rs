@@ -468,7 +468,9 @@ impl WindowsWindow {
                 .unwrap_or(""),
         );
 
-        let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp {
+        let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp
+            || params.kind == WindowKind::Overlay
+        {
             (WS_EX_TOOLWINDOW | WS_EX_TOPMOST, WINDOW_STYLE(0x0))
         } else {
             let mut dwstyle = WS_SYSMENU;

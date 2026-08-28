@@ -4659,7 +4659,8 @@ impl Window {
             image_id: data.id,
             frame_index: 0,
         };
-        self.sprite_atlas.remove(&crate::AtlasKey::WideImage(params));
+        self.sprite_atlas
+            .remove(&crate::AtlasKey::WideImage(params));
         Ok(())
     }
 
@@ -5171,6 +5172,11 @@ impl Window {
                     self.refresh();
                     PlatformInput::FileDrop(FileDropEvent::Exited)
                 }
+                FileDropEvent::SessionMoved { position } => {
+                    let global = self.bounds().origin + position;
+                    cx.platform_drag_moved(global, self);
+                    PlatformInput::FileDrop(FileDropEvent::SessionMoved { position })
+                }
                 FileDropEvent::Ended => {
                     cx.end_platform_drag(self.handle.window_id());
                     self.refresh();
@@ -5201,6 +5207,46 @@ impl Window {
         DispatchEventResult {
             propagate: cx.propagate_event,
             default_prevented: self.default_prevented,
+        }
+    }
+
+    /// Moves the window so its top-left corner sits at `origin`, in global
+    /// window coordinates.
+    pub fn set_origin(&mut self, origin: Point<Pixels>) {
+        self.platform_window.move_to(origin);
+    }
+
+    /// Whether this window participates in drag-and-drop destination routing.
+    /// A window being dragged along with the pointer turns this off so drops
+    /// pass through it to the window beneath.
+    pub fn set_accepts_drags(&self, accepts: bool) {
+        self.platform_window.set_accepts_drags(accepts);
+    }
+
+    /// Hands the active drag to the platform immediately, without waiting for
+    /// the pointer to leave the window. Requires the active drag to carry an
+    /// external payload source and the platform to support external drags.
+    pub fn promote_active_drag_to_platform(&mut self, cx: &mut App) -> bool {
+        if !self.platform_window.can_start_external_drag() {
+            return false;
+        }
+        let Some(payload_source) = cx
+            .active_drag
+            .as_mut()
+            .and_then(|drag| drag.external_payload_source.take())
+        else {
+            return false;
+        };
+        let Some(payload) = payload_source(self, cx) else {
+            return false;
+        };
+        if self.platform_window.start_external_drag(&payload)
+            && cx.hand_active_drag_to_platform(self.handle.window_id())
+        {
+            self.refresh();
+            true
+        } else {
+            false
         }
     }
 

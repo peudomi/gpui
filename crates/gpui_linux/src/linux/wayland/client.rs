@@ -507,7 +507,11 @@ impl WaylandClientStatePtr {
             return false;
         };
 
-        let ExternalDragPayload::Files(paths) = payload;
+        // An app-private drag would need a private mime type offered here and
+        // recognized on the data-offer side; until then the drag stays in-window.
+        let ExternalDragPayload::Files(paths) = payload else {
+            return false;
+        };
         let uri_list = file_uri_list(paths);
         if uri_list.is_empty() {
             return false;

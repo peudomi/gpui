@@ -697,6 +697,11 @@ impl ExternalPaths {
 pub enum ExternalDragPayload {
     /// Real on-disk paths, handed to the platform as an outbound file drag.
     Files(FileDragPaths),
+    /// An app-private drag carrying no externally usable data. It lets an
+    /// in-app drag leave the window and be restored in another window of the
+    /// same app; other applications are offered only a private pasteboard
+    /// type they will not accept.
+    AppPrivate,
 }
 
 /// Paths handed to the platform for a native file drag. Directory metadata is
@@ -745,6 +750,13 @@ pub enum FileDropEvent {
     },
     /// The user has stopped dragging the files over the window.
     Exited,
+    /// The platform-owned drag session moved. Delivered to the source window
+    /// for the whole session, wherever the pointer is on screen.
+    SessionMoved {
+        /// The pointer position, relative to the source window. Outside the
+        /// window this can be negative or exceed the window bounds.
+        position: Point<Pixels>,
+    },
     /// The platform-owned drag session has ended.
     Ended,
 }
