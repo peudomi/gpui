@@ -100,6 +100,8 @@ const NSTrackingActiveAlways: NSUInteger = 0x80;
 #[allow(non_upper_case_globals)]
 const NSTrackingInVisibleRect: NSUInteger = 0x200;
 #[allow(non_upper_case_globals)]
+const NSWindowAnimationBehaviorNone: NSInteger = 2;
+#[allow(non_upper_case_globals)]
 const NSWindowAnimationBehaviorUtilityWindow: NSInteger = 4;
 #[allow(non_upper_case_globals)]
 const NSViewLayerContentsRedrawDuringViewResize: NSInteger = 2;
@@ -1176,9 +1178,13 @@ impl MacWindow {
                         native_window.setHasShadow_(NO);
                         native_window.setIgnoresMouseEvents_(YES);
                     }
+                    let animation_behavior = match kind {
+                        WindowKind::Overlay => NSWindowAnimationBehaviorNone,
+                        _ => NSWindowAnimationBehaviorUtilityWindow,
+                    };
                     let _: () = msg_send![
                         native_window,
-                        setAnimationBehavior: NSWindowAnimationBehaviorUtilityWindow
+                        setAnimationBehavior: animation_behavior
                     ];
                     native_window.setCollectionBehavior_(
                         NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces |

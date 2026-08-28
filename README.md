@@ -52,11 +52,19 @@ source (`zed-industries/zed`):
   APIs: `PlatformWindow::move_to` (programmatic placement),
   `PlatformWindow::set_accepts_drags` (a window dragged along with the pointer
   opts out of drop destination routing), and `WindowKind::Overlay`, a
-  chrome-less, shadowless, non-activating always-on-top surface excluded from
-  drag destination routing and mouse hit-testing. All of this is implemented
+  chrome-less, shadowless, unanimated, non-activating always-on-top surface
+  excluded from drag destination routing and mouse hit-testing. All of this is implemented
   on macOS; Windows/X11 map `Overlay` to their popup-style windows, the
   Wayland backend declines `AppPrivate` sources, and the web backend rejects
   `Overlay`.
+
+- Content masks can be rounded. `ContentMask` carries `corner_radii` alongside
+  its bounds, `Style::overflow_mask` fills them from the element's own corner
+  radii, and every backend's fragment stage multiplies coverage by a rounded-rect
+  SDF of the mask. Rectangular hardware clip planes still do the coarse cut, and
+  a mask with zero radii takes an early out, so unrounded masks are unchanged.
+  Implemented for quads, shadows, underlines, sprites, and paths on Metal, WGSL,
+  and HLSL; hardware video `surface` primitives still clip rectangularly.
 
 These changes are documented in detail, with code, rationale, and open
 questions, in [docs/fork](docs/fork/README.md).

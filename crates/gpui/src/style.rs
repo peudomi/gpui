@@ -679,7 +679,13 @@ impl Style {
                     (false, false) => Bounds::from_corners(min, max),
                 };
 
-                Some(ContentMask { bounds })
+                Some(ContentMask {
+                    bounds,
+                    corner_radii: self
+                        .corner_radii
+                        .to_pixels(rem_size)
+                        .clamp_radii_for_quad_size(bounds.size),
+                })
             }
         }
     }

@@ -1922,6 +1922,8 @@ pub struct DispatchEventResult {
 pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
     /// The bounds
     pub bounds: Bounds<P>,
+    /// The radii by which the corners of `bounds` are rounded.
+    pub corner_radii: Corners<P>,
 }
 
 impl ContentMask<Pixels> {
@@ -1929,13 +1931,28 @@ impl ContentMask<Pixels> {
     pub fn scale(&self, factor: f32) -> ContentMask<ScaledPixels> {
         ContentMask {
             bounds: self.bounds.scale(factor),
+            corner_radii: self.corner_radii.scale(factor),
         }
     }
 
     /// Intersect the content mask with the given content mask.
+    ///
+    /// A rounded rectangle is not closed under intersection, so the radii survive
+    /// only when one mask's bounds contain the other's; a partial overlap falls
+    /// back to a plain rectangle.
     pub fn intersect(&self, other: &Self) -> Self {
         let bounds = self.bounds.intersect(&other.bounds);
-        ContentMask { bounds }
+        let corner_radii = if bounds == self.bounds {
+            self.corner_radii
+        } else if bounds == other.bounds {
+            other.corner_radii
+        } else {
+            Corners::default()
+        };
+        ContentMask {
+            bounds,
+            corner_radii,
+        }
     }
 }
 
@@ -2774,8 +2791,10 @@ impl Window {
 
     #[inline]
     fn snapped_content_mask(&self) -> ContentMask<ScaledPixels> {
+        let mask = self.content_mask();
         ContentMask {
-            bounds: self.cover_bounds(self.content_mask().bounds),
+            bounds: self.cover_bounds(mask.bounds),
+            corner_radii: mask.corner_radii.scale(self.scale_factor()),
         }
     }
 
@@ -3729,6 +3748,7 @@ impl Window {
                     origin: Point::default(),
                     size: self.viewport_size,
                 },
+                corner_radii: Corners::default(),
             })
     }
 
@@ -4161,6 +4181,11 @@ impl Window {
                 self.next_frame.scene.insert_primitive(Quad {
                     content_mask: ContentMask {
                         bounds: content_mask_bounds,
+                        corner_radii: if content_mask_bounds == quad.content_mask.bounds {
+                            quad.content_mask.corner_radii
+                        } else {
+                            Corners::default()
+                        },
                     },
                     ..quad
                 });
