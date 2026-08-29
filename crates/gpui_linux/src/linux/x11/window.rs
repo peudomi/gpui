@@ -20,6 +20,7 @@ use x11rb::{
     errors::ConnectionError,
     properties::{WmHints, WmSizeHints},
     protocol::{
+        shape::{self, ConnectionExt as _},
         sync,
         xinput::{self, ConnectionExt as _},
         xproto::{self, ClientMessageEvent, ConnectionExt, TranslateCoordinatesReply},
@@ -613,6 +614,34 @@ impl X11WindowState {
                         &[atoms._NET_WM_WINDOW_TYPE_NOTIFICATION],
                     ),
                 )?;
+            }
+
+            // An overlay may sit directly under the cursor, so hit-testing must
+            // pass to the window below. Drag routing is excluded via XdndAware.
+            if params.kind == WindowKind::Overlay {
+                if xcb
+                    .extension_information(shape::X11_EXTENSION_NAME)
+                    .ok()
+                    .flatten()
+                    .is_some()
+                {
+                    check_reply(
+                        || "X11 ShapeRectangles clearing the input region failed.",
+                        xcb.shape_rectangles(
+                            shape::SO::SET,
+                            shape::SK::INPUT,
+                            xproto::ClipOrdering::UNSORTED,
+                            x_window,
+                            0,
+                            0,
+                            &[],
+                        ),
+                    )?;
+                } else {
+                    log::warn!(
+                        "X11 SHAPE extension unavailable: overlay windows will not pass input through"
+                    );
+                }
             }
 
             if params.kind == WindowKind::Floating || params.kind == WindowKind::Dialog {
@@ -1436,6 +1465,45 @@ impl PlatformWindow for X11Window {
             ),
         )
         .log_err();
+        xcb_flush(&self.0.xcb);
+    }
+
+    fn move_to(&mut self, origin: Point<Pixels>) {
+        let scale_factor = self.0.state.borrow().scale_factor;
+        let x = (origin.x.as_f32() * scale_factor).round() as i32;
+        let y = (origin.y.as_f32() * scale_factor).round() as i32;
+
+        check_reply(
+            || format!("X11 ConfigureWindow failed. x: {}, y: {}", x, y),
+            self.0
+                .xcb
+                .configure_window(self.0.x_window, &xproto::ConfigureWindowAux::new().x(x).y(y)),
+        )
+        .log_err();
+        xcb_flush(&self.0.xcb);
+    }
+
+    fn set_accepts_drags(&self, accepts: bool) {
+        let atoms = self.0.state.borrow().atoms;
+        if accepts {
+            check_reply(
+                || "X11 ChangeProperty32 setting XdndAware failed.",
+                self.0.xcb.change_property32(
+                    xproto::PropMode::REPLACE,
+                    self.0.x_window,
+                    atoms.XdndAware,
+                    atoms.XA_ATOM,
+                    &[5],
+                ),
+            )
+            .log_err();
+        } else {
+            check_reply(
+                || "X11 DeleteProperty on XdndAware failed.",
+                self.0.xcb.delete_property(self.0.x_window, atoms.XdndAware),
+            )
+            .log_err();
+        }
         xcb_flush(&self.0.xcb);
     }
 

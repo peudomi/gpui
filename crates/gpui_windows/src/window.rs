@@ -2,11 +2,13 @@
 
 use std::{
     cell::{Cell, RefCell},
+    mem::ManuallyDrop,
     num::NonZeroIsize,
+    os::windows::ffi::OsStrExt,
     path::PathBuf,
     rc::{Rc, Weak},
     str::FromStr,
-    sync::{Arc, Once, atomic::AtomicBool},
+    sync::{Arc, Once, OnceLock, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 
@@ -21,7 +23,13 @@ use windows::{
         Graphics::Dwm::*,
         Graphics::Gdi::*,
         System::{
-            Com::*, Diagnostics::Debug::MessageBeep, LibraryLoader::*, Ole::*, SystemServices::*,
+            Com::*,
+            DataExchange::RegisterClipboardFormatW,
+            Diagnostics::Debug::MessageBeep,
+            LibraryLoader::*,
+            Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
+            Ole::*,
+            SystemServices::*,
         },
         UI::{Controls::*, HiDpi::*, Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
     },
@@ -88,6 +96,7 @@ pub struct WindowsWindowState {
     initial_placement: Cell<Option<WindowOpenStatus>>,
     hwnd: HWND,
     pub(crate) a11y: RefCell<Option<A11yState>>,
+    last_drag_session_cursor: Cell<Option<(i32, i32)>>,
 }
 
 pub(crate) struct WindowsWindowInner {
@@ -96,6 +105,7 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) state: WindowsWindowState,
     system_settings: WindowsSystemSettings,
     pub(crate) handle: AnyWindowHandle,
+    pub(crate) kind: WindowKind,
     pub(crate) hide_title_bar: bool,
     pub(crate) is_movable: bool,
     pub(crate) is_resizable: bool,
@@ -186,6 +196,7 @@ impl WindowsWindowState {
             draw_coordinator,
             direct_manipulation,
             a11y: RefCell::new(None),
+            last_drag_session_cursor: Cell::new(None),
         })
     }
 
@@ -269,6 +280,7 @@ impl WindowsWindowInner {
             drop_target_helper: context.drop_target_helper.clone(),
             state,
             handle: context.handle,
+            kind: context.kind.clone(),
             hide_title_bar: context.hide_title_bar,
             is_movable: context.is_movable,
             is_resizable: context.is_resizable,
@@ -349,6 +361,10 @@ impl WindowsWindowInner {
         let Some(open_status) = self.state.initial_placement.take() else {
             return Ok(());
         };
+        // The app has shown the window itself since, so where it put it wins.
+        if unsafe { IsWindowVisible(self.hwnd) }.as_bool() {
+            return Ok(());
+        }
         match open_status.state {
             WindowOpenState::Maximized => unsafe {
                 SetWindowPlacement(self.hwnd, &open_status.placement)
@@ -373,6 +389,51 @@ impl WindowsWindowInner {
     pub(crate) fn system_settings(&self) -> &WindowsSystemSettings {
         &self.system_settings
     }
+
+    fn dispatch_drag_input(&self, input: PlatformInput) {
+        if let Some(mut func) = self.state.callbacks.input.take() {
+            func(input);
+            self.state.callbacks.input.set(Some(func));
+        }
+    }
+
+    /// `IDropSource` callbacks carry no position, so it is read from the cursor.
+    fn emit_drag_session_moved(&self) {
+        let mut cursor = POINT::default();
+        unsafe {
+            if GetCursorPos(&mut cursor).log_err().is_none() {
+                return;
+            }
+        }
+        if self.state.last_drag_session_cursor.get() == Some((cursor.x, cursor.y)) {
+            return;
+        }
+        self.state
+            .last_drag_session_cursor
+            .set(Some((cursor.x, cursor.y)));
+
+        let mut client_position = cursor;
+        unsafe {
+            ScreenToClient(self.hwnd, &mut client_position).ok().log_err();
+        }
+        let position = logical_point(
+            client_position.x as f32,
+            client_position.y as f32,
+            self.state.scale_factor.get(),
+        );
+        self.dispatch_drag_input(PlatformInput::FileDrop(FileDropEvent::SessionMoved {
+            position,
+        }));
+    }
+
+    /// A Win32 modal loop owns the thread and never reaches the main loop's task
+    /// processing, so without this a drag handler's work replays after the drop.
+    fn run_pending_foreground_tasks(&self) {
+        let mut runnables = self.main_receiver.clone().try_iter();
+        while let Some(Ok(runnable)) = runnables.next() {
+            WindowsDispatcher::execute_runnable(runnable);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -383,6 +444,7 @@ pub(crate) struct Callbacks {
     pub(crate) hovered_status_change: Cell<Option<Box<dyn FnMut(bool)>>>,
     pub(crate) resize: Cell<Option<Box<dyn FnMut(Size<Pixels>, f32)>>>,
     pub(crate) moved: Cell<Option<Box<dyn FnMut()>>>,
+    pub(crate) move_loop_ended: Cell<Option<Box<dyn FnMut()>>>,
     pub(crate) should_close: Cell<Option<Box<dyn FnMut() -> bool>>>,
     pub(crate) close: Cell<Option<Box<dyn FnOnce()>>>,
     pub(crate) hit_test_window_control: Cell<Option<Box<dyn FnMut() -> Option<WindowControlArea>>>>,
@@ -392,6 +454,7 @@ pub(crate) struct Callbacks {
 struct WindowCreateContext {
     inner: Option<Result<Rc<WindowsWindowInner>>>,
     handle: AnyWindowHandle,
+    kind: WindowKind,
     hide_title_bar: bool,
     display: WindowsDisplay,
     is_movable: bool,
@@ -471,7 +534,11 @@ impl WindowsWindow {
         let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp
             || params.kind == WindowKind::Overlay
         {
-            (WS_EX_TOOLWINDOW | WS_EX_TOPMOST, WINDOW_STYLE(0x0))
+            let mut dwexstyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+            if params.kind == WindowKind::Overlay {
+                dwexstyle |= WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
+            }
+            (dwexstyle, WINDOW_STYLE(0x0))
         } else {
             let mut dwstyle = WS_SYSMENU;
 
@@ -507,6 +574,7 @@ impl WindowsWindow {
         let mut context = WindowCreateContext {
             inner: None,
             handle,
+            kind: params.kind.clone(),
             hide_title_bar,
             display,
             is_movable: params.is_movable,
@@ -550,23 +618,81 @@ impl WindowsWindow {
         let hwnd = creation_result?;
         let this = this.unwrap();
 
-        register_drag_drop(&this)?;
+        // An overlay may sit directly under the cursor, so both drag routing
+        // and hit-testing must pass to the window below.
+        if params.kind != WindowKind::Overlay {
+            register_drag_drop(&this)?;
+        } else {
+            unsafe {
+                let policy = DWMNCRP_DISABLED;
+                DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_NCRENDERING_POLICY,
+                    &policy as *const _ as _,
+                    std::mem::size_of::<DWMNCRENDERINGPOLICY>() as u32,
+                )
+                .log_err();
+
+                // An overlay must track the cursor from its first frame, so
+                // DWM's open animation reads as latency.
+                let disabled: BOOL = true.into();
+                DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_TRANSITIONS_FORCEDISABLED,
+                    &disabled as *const _ as _,
+                    std::mem::size_of::<BOOL>() as u32,
+                )
+                .log_err();
+            }
+        }
         set_non_rude_hwnd(hwnd, true);
         configure_dwm_dark_mode(hwnd, appearance);
         this.state.border_offset.update(hwnd)?;
+        let app_placed_window = params.kind == WindowKind::Overlay || !params.focus;
         let placement = retrieve_window_placement(
             hwnd,
             display,
             params.bounds,
             this.state.scale_factor.get(),
             &this.state.border_offset,
+            // The fallback is for restored bounds, and a restore always takes
+            // focus. A window the app places may sit clear of every monitor.
+            app_placed_window,
         )?;
         if params.show {
             let mut placement = placement;
             if !params.focus {
                 placement.showCmd = SW_SHOWNOACTIVATE.0 as u32;
             }
-            unsafe { SetWindowPlacement(hwnd, &placement)? };
+            // `SetWindowPlacement` restores a window onto a monitor, dragging
+            // an off-display origin back into view. `SetWindowPos` does not.
+            if app_placed_window {
+                let rect = placement.rcNormalPosition;
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        None,
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    )
+                    .context("unable to place window")?;
+                    // `ShowWindowAsync` reports the *previous* visibility, so a
+                    // successful first show returns false.
+                    let _ = ShowWindowAsync(
+                        hwnd,
+                        if params.focus {
+                            SW_SHOWNORMAL
+                        } else {
+                            SW_SHOWNOACTIVATE
+                        },
+                    );
+                }
+            } else {
+                unsafe { SetWindowPlacement(hwnd, &placement)? };
+            }
         } else {
             this.state.initial_placement.set(Some(WindowOpenStatus {
                 placement,
@@ -603,7 +729,7 @@ impl Drop for WindowsWindow {
             .spawn(async move {
                 let handle = this.hwnd;
                 unsafe {
-                    RevokeDragDrop(handle).log_err();
+                    let _ = RevokeDragDrop(handle);
                     DestroyWindow(handle).log_err();
                 }
             })
@@ -696,6 +822,104 @@ impl PlatformWindow for WindowsWindow {
 
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
         self.state.input_handler.take()
+    }
+
+    fn move_to(&mut self, origin: Point<Pixels>) {
+        let this = self.0.clone();
+        let scale_factor = self.scale_factor();
+        self.0
+            .executor
+            .spawn(async move {
+                let target_x = (origin.x.as_f32() * scale_factor).round() as i32;
+                let target_y = (origin.y.as_f32() * scale_factor).round() as i32;
+                unsafe {
+                    let mut window_rect = RECT::default();
+                    if GetWindowRect(this.hwnd, &mut window_rect).log_err().is_none() {
+                        return;
+                    }
+                    // `WM_MOVE` reports the client area but `SetWindowPos`
+                    // places the window rect; see pitfalls 20.
+                    let mut client_origin = POINT::default();
+                    if !ClientToScreen(this.hwnd, &mut client_origin).as_bool() {
+                        return;
+                    }
+                    let x = target_x - (client_origin.x - window_rect.left);
+                    let y = target_y - (client_origin.y - window_rect.top);
+                    SetWindowPos(
+                        this.hwnd,
+                        None,
+                        x,
+                        y,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    )
+                    .log_err();
+                }
+            })
+            .detach();
+    }
+
+    fn set_accepts_drags(&self, accepts: bool) {
+        // Applied synchronously: a window opting out mid-gesture has to stop
+        // being a destination before the next dragging event arrives.
+        if self.0.kind == WindowKind::Overlay {
+            return;
+        }
+        unsafe {
+            let _ = RevokeDragDrop(self.0.hwnd);
+        }
+        if accepts {
+            register_drag_drop(&self.0).log_err();
+        }
+    }
+
+    fn can_start_external_drag(&self) -> bool {
+        true
+    }
+
+    fn start_external_drag(&self, payload: &ExternalDragPayload) -> bool {
+        let data_object = match payload {
+            ExternalDragPayload::Files(paths) => {
+                if paths.entries().is_empty() {
+                    log::warn!("start_external_drag declined: no paths");
+                    return false;
+                }
+                file_drag_data_object(paths)
+            }
+            ExternalDragPayload::AppPrivate => private_drag_data_object(),
+        };
+        let Some(data_object) = data_object else {
+            log::warn!("start_external_drag declined: failed to build data object");
+            return false;
+        };
+        let use_default_cursors = matches!(payload, ExternalDragPayload::Files(_));
+        let this = self.0.clone();
+        // `DoDragDrop` runs a modal loop until the drag ends, so it is deferred
+        // out of the input dispatch that initiated it.
+        self.0
+            .executor
+            .spawn(async move {
+                let drop_source: IDropSource = WindowsDragSource {
+                    window: this.clone(),
+                    use_default_cursors,
+                }
+                .into();
+                this.state.last_drag_session_cursor.set(None);
+                let mut effect = DROPEFFECT_NONE;
+                let result = unsafe {
+                    DoDragDrop(
+                        &data_object,
+                        &drop_source,
+                        DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK,
+                        &mut effect,
+                    )
+                };
+                log::info!("external drag session ended: {result:?}");
+                this.dispatch_drag_input(PlatformInput::FileDrop(FileDropEvent::Ended));
+            })
+            .detach();
+        true
     }
 
     fn prompt(
@@ -910,6 +1134,26 @@ impl PlatformWindow for WindowsWindow {
         unsafe { ShowWindowAsync(self.0.hwnd, SW_MINIMIZE).ok().log_err() };
     }
 
+    fn start_window_move(&self) {
+        let hwnd = self.0.hwnd;
+        // `SC_MOVE` runs a modal loop until the button is released, so like
+        // `start_external_drag` it is deferred out of the input dispatch.
+        self.0
+            .executor
+            .spawn(async move {
+                unsafe {
+                    ReleaseCapture().log_err();
+                    SendMessageW(
+                        hwnd,
+                        WM_SYSCOMMAND,
+                        Some(WPARAM((SC_MOVE | 0x0002) as usize)),
+                        Some(LPARAM(GetMessagePos() as isize)),
+                    );
+                }
+            })
+            .detach();
+    }
+
     fn zoom(&self) {
         unsafe {
             if IsWindowVisible(self.0.hwnd).as_bool() {
@@ -968,6 +1212,10 @@ impl PlatformWindow for WindowsWindow {
 
     fn on_should_close(&self, callback: Box<dyn FnMut() -> bool>) {
         self.state.callbacks.should_close.set(Some(callback));
+    }
+
+    fn on_move_loop_ended(&self, callback: Box<dyn FnMut()>) {
+        self.state.callbacks.move_loop_ended.set(Some(callback));
     }
 
     fn on_close(&self, callback: Box<dyn FnOnce()>) {
@@ -1090,6 +1338,234 @@ impl accesskit::ActionHandler for A11yActionHandler {
     }
 }
 
+// Per-app, so that two apps built on this gpui do not accept each other's
+// private drags as empty file drops.
+fn private_drag_format() -> Option<u16> {
+    static FORMAT: OnceLock<Option<u16>> = OnceLock::new();
+    *FORMAT.get_or_init(|| {
+        let identity = std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let name = HSTRING::from(format!("app.gpui.private-drag.{identity}"));
+        let format = unsafe { RegisterClipboardFormatW(&name) };
+        if format == 0 {
+            log::error!(
+                "unable to register the app-private drag clipboard format: {}",
+                std::io::Error::last_os_error()
+            );
+            return None;
+        }
+        Some(format as u16)
+    })
+}
+
+fn hglobal_format(format: u16) -> FORMATETC {
+    FORMATETC {
+        cfFormat: format,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32,
+    }
+}
+
+fn is_private_drag(data_object: &IDataObject) -> bool {
+    let Some(format) = private_drag_format() else {
+        return false;
+    };
+    unsafe { data_object.QueryGetData(&hglobal_format(format)) == S_OK }
+}
+
+fn private_drag_data_object() -> Option<IDataObject> {
+    // The payload is a placeholder; the format itself is the identification.
+    let format = private_drag_format()?;
+    Some(
+        WindowsDragDataObject {
+            formats: vec![(format, b"gpui".to_vec())],
+        }
+        .into(),
+    )
+}
+
+fn file_drag_data_object(paths: &FileDragPaths) -> Option<IDataObject> {
+    let mut names = Vec::new();
+    for (path, _) in paths.entries() {
+        names.extend(dunce::simplified(path).as_os_str().encode_wide());
+        names.push(0);
+    }
+    names.push(0);
+
+    let header = DROPFILES {
+        pFiles: std::mem::size_of::<DROPFILES>() as u32,
+        pt: POINT::default(),
+        fNC: false.into(),
+        fWide: true.into(),
+    };
+    let mut bytes = Vec::with_capacity(std::mem::size_of::<DROPFILES>() + names.len() * 2);
+    bytes.extend_from_slice(unsafe {
+        std::slice::from_raw_parts(
+            (&header as *const DROPFILES).cast::<u8>(),
+            std::mem::size_of::<DROPFILES>(),
+        )
+    });
+    for unit in names {
+        bytes.extend_from_slice(&unit.to_ne_bytes());
+    }
+
+    Some(
+        WindowsDragDataObject {
+            formats: vec![(CF_HDROP.0, bytes)],
+        }
+        .into(),
+    )
+}
+
+#[implement(IDataObject)]
+struct WindowsDragDataObject {
+    formats: Vec<(u16, Vec<u8>)>,
+}
+
+impl WindowsDragDataObject {
+    fn payload(&self, format: *const FORMATETC) -> Option<&[u8]> {
+        let format = unsafe { format.as_ref() }?;
+        if format.dwAspect != DVASPECT_CONTENT.0 || format.tymed & TYMED_HGLOBAL.0 as u32 == 0 {
+            return None;
+        }
+        self.formats
+            .iter()
+            .find(|(cf, _)| *cf == format.cfFormat)
+            .map(|(_, bytes)| bytes.as_slice())
+    }
+}
+
+#[allow(non_snake_case)]
+impl IDataObject_Impl for WindowsDragDataObject_Impl {
+    fn GetData(&self, pformatetcin: *const FORMATETC) -> windows::core::Result<STGMEDIUM> {
+        let bytes = self
+            .payload(pformatetcin)
+            .ok_or_else(|| windows::core::Error::from(DV_E_FORMATETC))?;
+        unsafe {
+            let hglobal = GlobalAlloc(GMEM_MOVEABLE, bytes.len())?;
+            let target = GlobalLock(hglobal);
+            if target.is_null() {
+                let _ = GlobalFree(Some(hglobal));
+                return Err(windows::core::Error::from(E_OUTOFMEMORY));
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), target.cast::<u8>(), bytes.len());
+            let _ = GlobalUnlock(hglobal);
+            Ok(STGMEDIUM {
+                tymed: TYMED_HGLOBAL.0 as u32,
+                u: STGMEDIUM_0 { hGlobal: hglobal },
+                pUnkForRelease: ManuallyDrop::new(None),
+            })
+        }
+    }
+
+    fn GetDataHere(
+        &self,
+        _pformatetc: *const FORMATETC,
+        _pmedium: *mut STGMEDIUM,
+    ) -> windows::core::Result<()> {
+        Err(windows::core::Error::from(DV_E_FORMATETC))
+    }
+
+    fn QueryGetData(&self, pformatetc: *const FORMATETC) -> HRESULT {
+        if self.payload(pformatetc).is_some() {
+            S_OK
+        } else {
+            DV_E_FORMATETC
+        }
+    }
+
+    fn GetCanonicalFormatEtc(
+        &self,
+        _pformatectin: *const FORMATETC,
+        pformatetcout: *mut FORMATETC,
+    ) -> HRESULT {
+        if let Some(out) = unsafe { pformatetcout.as_mut() } {
+            out.ptd = std::ptr::null_mut();
+        }
+        E_NOTIMPL
+    }
+
+    fn SetData(
+        &self,
+        _pformatetc: *const FORMATETC,
+        _pmedium: *const STGMEDIUM,
+        _frelease: windows::core::BOOL,
+    ) -> windows::core::Result<()> {
+        Err(windows::core::Error::from(E_NOTIMPL))
+    }
+
+    fn EnumFormatEtc(&self, dwdirection: u32) -> windows::core::Result<IEnumFORMATETC> {
+        if dwdirection != DATADIR_GET.0 as u32 {
+            return Err(windows::core::Error::from(E_NOTIMPL));
+        }
+        let formats = self
+            .formats
+            .iter()
+            .map(|(format, _)| hglobal_format(*format))
+            .collect::<Vec<_>>();
+        unsafe { SHCreateStdEnumFmtEtc(&formats) }
+    }
+
+    fn DAdvise(
+        &self,
+        _pformatetc: *const FORMATETC,
+        _advf: u32,
+        _padvsink: windows::core::Ref<'_, IAdviseSink>,
+    ) -> windows::core::Result<u32> {
+        Err(windows::core::Error::from(OLE_E_ADVISENOTSUPPORTED))
+    }
+
+    fn DUnadvise(&self, _dwconnection: u32) -> windows::core::Result<()> {
+        Err(windows::core::Error::from(OLE_E_ADVISENOTSUPPORTED))
+    }
+
+    fn EnumDAdvise(&self) -> windows::core::Result<IEnumSTATDATA> {
+        Err(windows::core::Error::from(OLE_E_ADVISENOTSUPPORTED))
+    }
+}
+
+#[implement(IDropSource)]
+struct WindowsDragSource {
+    window: Rc<WindowsWindowInner>,
+    use_default_cursors: bool,
+}
+
+#[allow(non_snake_case)]
+impl IDropSource_Impl for WindowsDragSource_Impl {
+    fn QueryContinueDrag(
+        &self,
+        fescapepressed: windows::core::BOOL,
+        grfkeystate: MODIFIERKEYS_FLAGS,
+    ) -> HRESULT {
+        if fescapepressed.as_bool() {
+            return DRAGDROP_S_CANCEL;
+        }
+        if !grfkeystate.contains(MK_LBUTTON) {
+            return DRAGDROP_S_DROP;
+        }
+        self.window.emit_drag_session_moved();
+        self.window.run_pending_foreground_tasks();
+        S_OK
+    }
+
+    fn GiveFeedback(&self, _dweffect: DROPEFFECT) -> HRESULT {
+        if self.use_default_cursors {
+            DRAGDROP_S_USEDEFAULTCURSORS
+        } else {
+            // The app draws its own drag feedback, so OLE must not replace the
+            // cursor with the drop-effect glyphs.
+            S_OK
+        }
+    }
+}
+
 #[implement(IDropTarget)]
 struct WindowsDragDropHandler(pub Rc<WindowsWindowInner>);
 
@@ -1121,22 +1597,27 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                 tymed: TYMED_HGLOBAL.0 as _,
             };
             let cursor_position = POINT { x: pt.x, y: pt.y };
-            if idata_obj.QueryGetData(&config as _) == S_OK {
+            // An app-private drag carries no paths, but the empty list still
+            // has to reach the app to restore a suspended in-app drag.
+            let has_files = idata_obj.QueryGetData(&config as _) == S_OK;
+            if has_files || is_private_drag(idata_obj) {
                 *pdweffect = DROPEFFECT_COPY;
-                let Some(mut idata) = idata_obj.GetData(&config as _).log_err() else {
-                    return Ok(());
-                };
-                if idata.u.hGlobal.is_invalid() {
-                    return Ok(());
-                }
-                let hdrop = HDROP(idata.u.hGlobal.0);
                 let mut paths = SmallVec::<[PathBuf; 2]>::new();
-                with_file_names(hdrop, |file_name| {
-                    if let Some(path) = PathBuf::from_str(&file_name).log_err() {
-                        paths.push(path);
+                if has_files {
+                    let Some(mut idata) = idata_obj.GetData(&config as _).log_err() else {
+                        return Ok(());
+                    };
+                    if idata.u.hGlobal.is_invalid() {
+                        return Ok(());
                     }
-                });
-                ReleaseStgMedium(&mut idata);
+                    let hdrop = HDROP(idata.u.hGlobal.0);
+                    with_file_names(hdrop, |file_name| {
+                        if let Some(path) = PathBuf::from_str(&file_name).log_err() {
+                            paths.push(path);
+                        }
+                    });
+                    ReleaseStgMedium(&mut idata);
+                }
                 let mut cursor_position = cursor_position;
                 ScreenToClient(self.0.hwnd, &mut cursor_position)
                     .ok()
@@ -1524,6 +2005,7 @@ fn retrieve_window_placement(
     initial_bounds: Bounds<Pixels>,
     scale_factor: f32,
     border_offset: &WindowBorderOffset,
+    honor_given_bounds: bool,
 ) -> Result<WINDOWPLACEMENT> {
     let mut placement = WINDOWPLACEMENT {
         length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
@@ -1531,7 +2013,7 @@ fn retrieve_window_placement(
     };
     unsafe { GetWindowPlacement(hwnd, &mut placement)? };
     // the bounds may be not inside the display
-    let bounds = if display.check_given_bounds(initial_bounds) {
+    let bounds = if honor_given_bounds || display.check_given_bounds(initial_bounds) {
         initial_bounds
     } else {
         display.default_bounds()

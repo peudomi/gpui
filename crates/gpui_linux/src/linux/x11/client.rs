@@ -63,7 +63,7 @@ use gpui::{
     AnyWindowHandle, Bounds, ClipboardItem, CursorStyle, DisplayId, FileDropEvent, Keystroke,
     Modifiers, ModifiersChangedEvent, MouseButton, Pixels, PlatformDisplay, PlatformInput,
     PlatformKeyboardLayout, PlatformWindow, Point, RequestFrameOptions, ScrollDelta, Size,
-    TouchPhase, WindowButtonLayout, WindowParams, point, px,
+    TouchPhase, WindowButtonLayout, WindowKind, WindowParams, point, px,
 };
 use gpui_wgpu::{CompositorGpuHint, GpuContext};
 
@@ -1629,6 +1629,7 @@ impl LinuxClient for X11Client {
             .resource_database
             .get_string("Xft.rgba", "Xft.Rgba")
             .is_some_and(|v| v.eq_ignore_ascii_case("bgr"));
+        let accepts_drags = params.kind != WindowKind::Overlay;
         let window = X11Window::new(
             handle,
             X11ClientStatePtr(Rc::downgrade(&self.0)),
@@ -1647,17 +1648,19 @@ impl LinuxClient for X11Client {
             supports_xinput_gestures,
             is_bgr,
         )?;
-        check_reply(
-            || "Failed to set XdndAware property",
-            state.xcb_connection.change_property32(
-                xproto::PropMode::REPLACE,
-                x_window,
-                state.atoms.XdndAware,
-                state.atoms.XA_ATOM,
-                &[5],
-            ),
-        )
-        .log_err();
+        if accepts_drags {
+            check_reply(
+                || "Failed to set XdndAware property",
+                state.xcb_connection.change_property32(
+                    xproto::PropMode::REPLACE,
+                    x_window,
+                    state.atoms.XdndAware,
+                    state.atoms.XA_ATOM,
+                    &[5],
+                ),
+            )
+            .log_err();
+        }
         xcb_flush(&state.xcb_connection);
 
         let window_ref = WindowRef {

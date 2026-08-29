@@ -857,6 +857,10 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>);
     fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>);
     fn on_moved(&self, callback: Box<dyn FnMut()>);
+    /// Invoked when the platform's own move/resize loop ends. It is the only
+    /// signal that a [`PlatformWindow::start_window_move`] drag has finished.
+    #[allow(unused_variables)]
+    fn on_move_loop_ended(&self, callback: Box<dyn FnMut()>) {}
     fn on_should_close(&self, callback: Box<dyn FnMut() -> bool>);
     fn on_hit_test_window_control(&self, callback: Box<dyn FnMut() -> Option<WindowControlArea>>);
     fn on_close(&self, callback: Box<dyn FnOnce()>);

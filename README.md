@@ -26,12 +26,12 @@ source (`zed-industries/zed`):
   and an `Rgba16Float` surface preference (with 8-bit fallback) on wgpu. On
   Windows/DirectX, the scene renders into an offscreen `R16G16B16A16_FLOAT`
   target (sRGB-encoded, so blending is unchanged) and a final `wide_present`
-  pass converts per the window's monitor, mirroring Chromium: with advanced
+  pass converts per the window's monitor: with advanced
   color (HDR/ACM) enabled it applies the sign-preserving extended sRGB EOTF
   into an f16 swap chain tagged `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`
   (scRGB) for the OS to color-manage; on SDR monitors it instead maps colors
   through a 3x3 matrix derived from the monitor ICC profile's primaries
-  (transfer curve assumed sRGB, as Chromium does) into an 8-bit swap chain.
+  (transfer curve assumed sRGB) into an 8-bit swap chain.
   The mode re-resolves when the window moves between monitors and on
   `WM_DISPLAYCHANGE`/`WM_SETTINGCHANGE` (HDR/ACM toggles, ICC profile
   reassignment); `GPUI_COLOR_MODE=scrgb|srgb` overrides detection for
@@ -48,15 +48,37 @@ source (`zed-industries/zed`):
   platform immediately instead of waiting for the pointer to leave the
   viewport, and `FileDropEvent::SessionMoved` with
   `App::set_platform_drag_moved_handler` reports the session's global pointer
-  position (from `draggingSession:movedToPoint:` on macOS). Supporting window
+  position (from `draggingSession:movedToPoint:` on macOS, and
+  `IDropSource::QueryContinueDrag` on Windows). Supporting window
   APIs: `PlatformWindow::move_to` (programmatic placement),
   `PlatformWindow::set_accepts_drags` (a window dragged along with the pointer
   opts out of drop destination routing), and `WindowKind::Overlay`, a
   chrome-less, shadowless, unanimated, non-activating always-on-top surface
-  excluded from drag destination routing and mouse hit-testing. All of this is implemented
-  on macOS; Windows/X11 map `Overlay` to their popup-style windows, the
-  Wayland backend declines `AppPrivate` sources, and the web backend rejects
-  `Overlay`.
+  excluded from drag destination routing and mouse hit-testing. Implemented on
+  macOS and Windows; the Windows backend also gained outbound drag sessions it
+  never had (`DoDragDrop` with a gpui-implemented `IDataObject` carrying either
+  `CF_HDROP` or the private format). Because `DoDragDrop` runs a modal loop that
+  owns the thread, the Windows backend drains the foreground task queue from
+  `QueryContinueDrag`, so work spawned by drag handlers runs during the drag
+  rather than replaying after the drop, and it disables DWM's open/close
+  transition on overlay windows so they appear without animation latency. It
+  also honors off-display opening bounds for overlays and for windows opened
+  unfocused, so an app can open a window out of sight ahead of the drag that
+  needs it: the display fallback that would otherwise recenter them exists for
+  restored bounds and a restore always takes focus, and such a window is placed
+  with `SetWindowPos` before being shown because `SetWindowPlacement` pulls a
+  restored window back onto a monitor, and the placement stashed for a window
+  opened with `show: false` is discarded once the app has shown the window
+  itself, so a later activation cannot yank it back to its creation bounds. `PlatformWindow::start_window_move`,
+  which upstream leaves unimplemented on Windows, now runs the system move loop
+  there (`WM_SYSCOMMAND` / `SC_MOVE`), and a new
+  `PlatformWindow::on_move_loop_ended` reports when that loop exits, which the
+  platform otherwise keeps to itself; Windows raises it from `WM_EXITSIZEMOVE`
+  and the other backends inherit the no-op default. X11 implements `move_to`,
+  `set_accepts_drags`, and `Overlay` (input excluded via an empty SHAPE input
+  region) but not the outbound drag session, so `AppPrivate` and `SessionMoved`
+  are unavailable there; the Wayland backend declines `AppPrivate` sources, and
+  the web backend rejects `Overlay`.
 
 - Content masks can be rounded. `ContentMask` carries `corner_radii` alongside
   its bounds, `Style::overflow_mask` fills them from the element's own corner

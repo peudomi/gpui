@@ -310,6 +310,10 @@ impl WindowsWindowInner {
         unsafe {
             KillTimer(Some(handle), SIZE_MOVE_LOOP_TIMER_ID).log_err();
         }
+        if let Some(mut callback) = self.state.callbacks.move_loop_ended.take() {
+            callback();
+            self.state.callbacks.move_loop_ended.set(Some(callback));
+        }
         None
     }
 

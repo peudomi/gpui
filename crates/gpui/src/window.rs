@@ -6076,6 +6076,16 @@ impl Window {
         }
     }
 
+    /// Registers a callback for the end of the platform move/resize loop that
+    /// [`Window::start_window_move`] enters.
+    pub fn on_move_loop_ended(&self, cx: &App, f: impl FnMut(&mut Window, &mut App) + 'static) {
+        let mut cx = self.to_async(cx);
+        let mut f = f;
+        self.platform_window.on_move_loop_ended(Box::new(move || {
+            cx.update(|window, cx| f(window, cx)).ok();
+        }))
+    }
+
     /// Register a callback that can interrupt the closing of the current window based the returned boolean.
     /// If the callback returns false, the window won't be closed.
     pub fn on_window_should_close(
