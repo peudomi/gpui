@@ -7397,7 +7397,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn file_drag_is_promoted_once_and_restored_in_source_window(cx: &mut TestAppContext) {
+    fn file_drag_is_promoted_once_and_restored_in_any_window(cx: &mut TestAppContext) {
         struct Drag {
             window: AnyWindowHandle,
             observed_drag_moves: Rc<RefCell<Vec<Point<Pixels>>>>,
@@ -7503,7 +7503,7 @@ mod tests {
             assert!(
                 cx.active_drag
                     .as_ref()
-                    .is_some_and(|drag| drag.value.downcast_ref::<ExternalPaths>().is_some())
+                    .is_some_and(|drag| drag.value.downcast_ref::<PathBuf>().is_some())
             );
             window.dispatch_event(FileDropEvent::Exited.to_platform_input(), cx);
             assert!(cx.active_drag.is_none());

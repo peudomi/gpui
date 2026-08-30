@@ -73,8 +73,15 @@ source (`zed-industries/zed`):
   which upstream leaves unimplemented on Windows, now runs the system move loop
   there (`WM_SYSCOMMAND` / `SC_MOVE`), and a new
   `PlatformWindow::on_move_loop_ended` reports when that loop exits, which the
-  platform otherwise keeps to itself; Windows raises it from `WM_EXITSIZEMOVE`
-  and the other backends inherit the no-op default. X11 implements `move_to`,
+  platform otherwise keeps to itself; Windows raises it from `WM_EXITSIZEMOVE`,
+  macOS from a local `NSEventTypeLeftMouseUp` monitor installed when
+  `start_window_move` hands the drag to `performWindowDragWithEvent:` (which
+  returns immediately and never reports the drag's end), and the remaining
+  backends inherit the no-op default. The macOS `start_window_move` also defers
+  the AppKit call by one runloop turn and synthesizes the drag event against
+  the receiving window from the live cursor, because a window created in the
+  current dispatch does not have its final frame yet and AppKit anchors the
+  drag against the frame it sees, sending the window to a wrong offset. X11 implements `move_to`,
   `set_accepts_drags`, and `Overlay` (input excluded via an empty SHAPE input
   region) but not the outbound drag session, so `AppPrivate` and `SessionMoved`
   are unavailable there; the Wayland backend declines `AppPrivate` sources, and

@@ -9,8 +9,9 @@ use anyhow::Result;
 use block::ConcreteBlock;
 use cocoa::{
     appkit::{
-        NSApplication, NSBackingStoreBuffered, NSColor, NSEvent, NSEventModifierFlags, NSEventType,
-        NSFilenamesPboardType, NSPasteboard, NSRequestUserAttentionType, NSScreen, NSView,
+        NSApplication, NSBackingStoreBuffered, NSColor, NSEvent, NSEventMask,
+        NSEventModifierFlags, NSEventType, NSFilenamesPboardType, NSPasteboard,
+        NSRequestUserAttentionType, NSScreen, NSView,
         NSViewHeightSizable, NSViewWidthSizable, NSVisualEffectMaterial, NSVisualEffectState,
         NSVisualEffectView, NSWindow, NSWindowCollectionBehavior, NSWindowOcclusionState,
         NSWindowOrderingMode, NSWindowStyleMask, NSWindowTitleVisibility,
@@ -608,6 +609,11 @@ struct MacWindowState {
     activate_callback: Option<Box<dyn FnMut(bool)>>,
     resize_callback: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
     moved_callback: Option<Box<dyn FnMut()>>,
+    move_loop_ended_callback: Option<Box<dyn FnMut()>>,
+    // `performWindowDragWithEvent:` returns immediately and AppKit never reports the
+    // drag's end, so the release is watched with a local `NSEventTypeLeftMouseUp`
+    // monitor installed for the duration of the drag.
+    move_loop_monitor: Option<id>,
     should_close_callback: Option<Box<dyn FnMut() -> bool>>,
     close_callback: Option<Box<dyn FnOnce()>>,
     appearance_changed_callback: Option<Box<dyn FnMut()>>,
@@ -1054,6 +1060,8 @@ impl MacWindow {
                 activate_callback: None,
                 resize_callback: None,
                 moved_callback: None,
+                move_loop_ended_callback: None,
+                move_loop_monitor: None,
                 should_close_callback: None,
                 close_callback: None,
                 appearance_changed_callback: None,
@@ -1899,6 +1907,10 @@ impl PlatformWindow for MacWindow {
         self.0.as_ref().lock().moved_callback = Some(callback);
     }
 
+    fn on_move_loop_ended(&self, callback: Box<dyn FnMut()>) {
+        self.0.as_ref().lock().move_loop_ended_callback = Some(callback);
+    }
+
     fn on_should_close(&self, callback: Box<dyn FnMut() -> bool>) {
         self.0.as_ref().lock().should_close_callback = Some(callback);
     }
@@ -2060,17 +2072,112 @@ impl PlatformWindow for MacWindow {
     }
 
     fn start_window_move(&self) {
-        let this = self.0.lock();
+        let mut this = self.0.lock();
         if this.simple_fullscreen_state.is_some() {
             return;
         }
         let window = this.native_window;
 
-        unsafe {
-            let app = NSApplication::sharedApplication(nil);
-            let event: id = msg_send![app, currentEvent];
-            let _: () = msg_send![window, performWindowDragWithEvent: event];
+        if this.move_loop_monitor.is_none() {
+            let state = Arc::downgrade(&self.0);
+            let handler = ConcreteBlock::new(move |event: id| -> id {
+                if let Some(state) = state.upgrade() {
+                    let mut lock = state.lock();
+                    if let Some(monitor) = lock.move_loop_monitor.take() {
+                        unsafe {
+                            let _: () = msg_send![class!(NSEvent), removeMonitor: monitor];
+                            let _: () = msg_send![monitor, release];
+                        }
+                    }
+                    let callback = lock.move_loop_ended_callback.take();
+                    drop(lock);
+                    if let Some(mut callback) = callback {
+                        callback();
+                        let mut lock = state.lock();
+                        if lock.move_loop_ended_callback.is_none() {
+                            lock.move_loop_ended_callback = Some(callback);
+                        }
+                    }
+                }
+                event
+            });
+            let handler = handler.copy();
+            unsafe {
+                let mask = NSEventMask::NSLeftMouseUpMask.bits();
+                let monitor: id = msg_send![
+                    class!(NSEvent),
+                    addLocalMonitorForEventsMatchingMask: mask
+                    handler: handler
+                ];
+                let monitor: id = msg_send![monitor, retain];
+                this.move_loop_monitor = Some(monitor);
+            }
         }
+
+        let executor = this.foreground_executor.clone();
+        let closed = this.closed.clone();
+        drop(this);
+
+        let called_at: NSPoint = unsafe { msg_send![class!(NSEvent), mouseLocation] };
+
+        // Deferred one runloop turn: a window opened in the current dispatch does not
+        // have its final frame yet, and AppKit anchors the drag against the frame it
+        // sees at call time, so a synchronous call sends the window to a garbage
+        // offset (measured 2026-08-29). The Windows implementation defers for the
+        // same reason in the other direction (modal loop).
+        executor
+            .spawn(async move {
+                if_window_not_closed(closed, || unsafe {
+                    let app = NSApplication::sharedApplication(nil);
+                    let current: id = msg_send![app, currentEvent];
+                    // The triggering event may belong to another window (a tab torn
+                    // off into a fresh window is dragged with the source window's
+                    // event), and by the deferred turn `currentEvent` may be anything,
+                    // so the drag event is synthesized against this window from the
+                    // live cursor instead.
+                    let screen_location: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+                    // The cursor kept moving during the deferred turn; carry the
+                    // window along or the drag anchors that far off the grip.
+                    let moved = NSPoint::new(
+                        screen_location.x - called_at.x,
+                        screen_location.y - called_at.y,
+                    );
+                    if moved.x != 0. || moved.y != 0. {
+                        let frame = NSWindow::frame(window);
+                        let _: () = msg_send![window, setFrameOrigin: NSPoint::new(
+                            frame.origin.x + moved.x,
+                            frame.origin.y + moved.y,
+                        )];
+                    }
+                    let window_location: NSPoint =
+                        msg_send![window, convertPointFromScreen: screen_location];
+                    let timestamp: f64 = if current != nil {
+                        msg_send![current, timestamp]
+                    } else {
+                        0.
+                    };
+                    let modifier_flags: NSUInteger = if current != nil {
+                        msg_send![current, modifierFlags]
+                    } else {
+                        0
+                    };
+                    let window_number: NSInteger = msg_send![window, windowNumber];
+                    let event: id = msg_send![
+                        class!(NSEvent),
+                        mouseEventWithType: NSEventType::NSLeftMouseDragged
+                        location: window_location
+                        modifierFlags: modifier_flags
+                        timestamp: timestamp
+                        windowNumber: window_number
+                        context: nil
+                        eventNumber: 0
+                        clickCount: 1
+                        pressure: 1.0f32
+                    ];
+                    let _: () = msg_send![window, performWindowDragWithEvent: event];
+                })
+            })
+            .detach();
     }
 
     fn can_start_external_drag(&self) -> bool {
@@ -3034,15 +3141,21 @@ extern "C" fn window_should_close(this: &Object, _: Sel, _: id) -> BOOL {
 
 extern "C" fn close_window(this: &Object, _: Sel) {
     unsafe {
-        let (close_callback, simple_fullscreen_state) = {
+        let (close_callback, simple_fullscreen_state, move_loop_monitor) = {
             let window_state = get_window_state(this);
             let mut lock = window_state.as_ref().lock();
             lock.closed.store(true, Ordering::Release);
             (
                 lock.close_callback.take(),
                 lock.simple_fullscreen_state.take(),
+                lock.move_loop_monitor.take(),
             )
         };
+
+        if let Some(monitor) = move_loop_monitor {
+            let _: () = msg_send![class!(NSEvent), removeMonitor: monitor];
+            let _: () = msg_send![monitor, release];
+        }
 
         if simple_fullscreen_state.is_some() {
             pop_simple_fullscreen_presentation_options();
