@@ -127,6 +127,7 @@ pub struct WaylandWindowState {
     pending_frame_callback: Option<wl_callback::WlCallback>,
     in_progress_configure: Option<InProgressConfigure>,
     resize_throttle: bool,
+    pending_move: bool,
     in_progress_window_controls: Option<WindowControls>,
     window_controls: WindowControls,
     client_inset: Option<Pixels>,
@@ -617,6 +618,7 @@ impl WaylandWindowState {
             window_bounds: options.bounds,
             in_progress_configure: None,
             resize_throttle: false,
+            pending_move: false,
             client,
             appearance,
             handle,
@@ -1010,6 +1012,14 @@ impl WaylandWindowStatePtr {
         self.frame_loop.get() != FrameLoop::Unconfigured
     }
 
+    fn send_window_move(&self) {
+        let state = self.state.borrow();
+        let serial = state.client.get_serial(SerialKind::MousePress);
+        if let Some(toplevel) = state.surface_state.toplevel() {
+            toplevel._move(&state.globals.seat, serial.as_raw());
+        }
+    }
+
     pub fn schedule_frame(&self) {
         match self.frame_loop.get() {
             FrameLoop::Parked => {
@@ -1126,6 +1136,11 @@ impl WaylandWindowStatePtr {
             drop(state);
             if initial_configure {
                 self.frame();
+                // The move must follow the first buffer commit; the surface is unmapped until then.
+                let pending_move = std::mem::take(&mut self.state.borrow_mut().pending_move);
+                if pending_move {
+                    self.send_window_move();
+                }
             } else {
                 self.request_redraw();
             }
@@ -1952,6 +1967,10 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn show_window_menu(&self, position: Point<Pixels>) {
+        // xdg_shell kills the client if these arrive before the first configure.
+        if !self.0.is_configured() {
+            return;
+        }
         let state = self.borrow();
         let serial = state.client.get_serial(SerialKind::MousePress);
         if let Some(toplevel) = state.surface_state.toplevel() {
@@ -1965,11 +1984,11 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn start_window_move(&self) {
-        let state = self.borrow();
-        let serial = state.client.get_serial(SerialKind::MousePress);
-        if let Some(toplevel) = state.surface_state.toplevel() {
-            toplevel._move(&state.globals.seat, serial.as_raw());
+        if !self.0.is_configured() {
+            self.borrow_mut().pending_move = true;
+            return;
         }
+        self.0.send_window_move();
     }
 
     fn can_start_external_drag(&self) -> bool {
@@ -1982,6 +2001,9 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn start_window_resize(&self, edge: gpui::ResizeEdge) {
+        if !self.0.is_configured() {
+            return;
+        }
         let state = self.borrow();
         if let Some(toplevel) = state.surface_state.toplevel() {
             toplevel.resize(

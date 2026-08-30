@@ -93,7 +93,9 @@ source (`zed-industries/zed`):
   SDF of the mask. Rectangular hardware clip planes still do the coarse cut, and
   a mask with zero radii takes an early out, so unrounded masks are unchanged.
   Implemented for quads, shadows, underlines, sprites, and paths on Metal, WGSL,
-  and HLSL; hardware video `surface` primitives still clip rectangularly.
+  and HLSL; hardware video `surface` primitives still clip rectangularly. Nested
+  masks intersect corner by corner, so a corner the intersection did not cut
+  keeps its rounding.
 
 These changes are documented in detail, with code, rationale, and open
 questions, in [docs/fork](docs/fork/README.md).

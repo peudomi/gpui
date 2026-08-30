@@ -1937,21 +1937,40 @@ impl ContentMask<Pixels> {
 
     /// Intersect the content mask with the given content mask.
     ///
-    /// A rounded rectangle is not closed under intersection, so the radii survive
-    /// only when one mask's bounds contain the other's; a partial overlap falls
-    /// back to a plain rectangle.
+    /// A rounded rectangle is not closed under intersection, so a corner keeps
+    /// its rounding only where the intersected rectangle still has that
+    /// corner; where the rectangle was cut, the rounding goes with the corner
+    /// that carried it.
     pub fn intersect(&self, other: &Self) -> Self {
         let bounds = self.bounds.intersect(&other.bounds);
-        let corner_radii = if bounds == self.bounds {
-            self.corner_radii
-        } else if bounds == other.bounds {
-            other.corner_radii
-        } else {
-            Corners::default()
+        let radius = |corner: fn(&Bounds<Pixels>) -> Point<Pixels>,
+                      radius: fn(&Corners<Pixels>) -> Pixels| {
+            let kept = corner(&bounds);
+            // Fuzzy: an edge the intersection never moved still arrives with
+            // sub-pixel float noise, which an exact compare reads as a cut.
+            let holds = |mask: &Self| (corner(&mask.bounds) - kept).magnitude() < 0.05;
+            let mine = if holds(self) {
+                radius(&self.corner_radii)
+            } else {
+                px(0.)
+            };
+            let theirs = if holds(other) {
+                radius(&other.corner_radii)
+            } else {
+                px(0.)
+            };
+            mine.max(theirs)
         };
+
         ContentMask {
             bounds,
-            corner_radii,
+            corner_radii: Corners {
+                top_left: radius(|bounds| bounds.origin, |radii| radii.top_left),
+                top_right: radius(Bounds::top_right, |radii| radii.top_right),
+                bottom_right: radius(Bounds::bottom_right, |radii| radii.bottom_right),
+                bottom_left: radius(Bounds::bottom_left, |radii| radii.bottom_left),
+            }
+            .clamp_radii_for_quad_size(bounds.size),
         }
     }
 }
