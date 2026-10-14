@@ -18,7 +18,7 @@ import json, re, sys
 ALLOWED = re.compile(
     r"^(Apache-2\.0( WITH LLVM-exception)?|MIT|MIT-0|BSD-[0-3]-Clause|ISC|Zlib|0BSD"
     r"|Unlicense|CC0-1\.0|BSL-1\.0|Unicode-3\.0|Unicode-DFS-2016|NCSA|OpenSSL"
-    r"|MPL-2\.0|bzip2-1\.0\.6)$"
+    r"|MPL-2\.0|bzip2-1\.0\.6|CDLA-Permissive-2\.0)$"
 )
 
 def part_ok(part):

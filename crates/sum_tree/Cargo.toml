@@ -16,10 +16,10 @@ doctest = false
 [dependencies]
 heapless.workspace = true
 rayon.workspace = true
-log.workspace = true
 proptest = { workspace = true, optional = true }
 
 [dev-dependencies]
+log.workspace = true
 rand.workspace = true
 proptest.workspace = true
 

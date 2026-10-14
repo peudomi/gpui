@@ -34,6 +34,19 @@ Conflicts fall into three categories:
    git status --porcelain | awk '$1 == "DU" { print $2 }' | xargs -r git rm -q --
    ```
 
+   Files that upstream *added* under a removed path do not conflict: they
+   arrive staged as `A` and must be removed too. Keep only additions under the
+   remaining crates:
+
+   ```shell
+   git status --porcelain | awk '$1 == "A" { print $2 }' \
+     | grep -Ev '^(crates/(bench_metrics|collections|gpui[a-z_]*|http_client|http_client_tls|path|refineable|reqwest_client|scheduler|sum_tree|util|util_macros)|tooling/perf)/' \
+     | xargs -r git rm -q -f --
+   ```
+
+   Upstream can also delete a crate we keep (`media` was replaced by `objc2`
+   bindings in `4b47ceb9d3`); follow upstream and drop it from `members`.
+
 2. **Root `Cargo.toml` / `Cargo.lock`**
    Resolve `Cargo.toml` by hand: keep our trimmed members/default-members/patch
    sections, and accept dependency entries upstream added or updated.

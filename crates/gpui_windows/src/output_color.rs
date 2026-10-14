@@ -179,7 +179,7 @@ fn monitor_icc_profile_path(gdi_device_name: &[u16; 32]) -> Option<String> {
             return None;
         }
         let mut len = 0u32;
-        GetICMProfileW(hdc, &mut len, None).ok();
+        let _ = GetICMProfileW(hdc, &mut len, None);
         let path = if len > 0 {
             let mut buffer = vec![0u16; len as usize];
             let ok = GetICMProfileW(
@@ -196,7 +196,7 @@ fn monitor_icc_profile_path(gdi_device_name: &[u16; 32]) -> Option<String> {
         } else {
             None
         };
-        DeleteDC(hdc).ok();
+        let _ = DeleteDC(hdc);
         path
     }
 }
