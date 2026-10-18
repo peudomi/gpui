@@ -105,12 +105,17 @@ A scheduled Claude Code cloud agent runs this once a day in a Linux sandbox.
    message (`Merge remote-tracking branch 'upstream/main'`). New upstream
    `crates/gpui*` crates are kept and added to `members`/`workspace.dependencies`
    only if they and all their in-repo dependencies are Apache-2.0.
-3. **Verify** with the mandatory checks above (Linux). macOS, iOS and Windows
-   code cannot be fully compiled there; try
-   `cargo check --target <triple>` for `aarch64-apple-darwin`,
-   `aarch64-apple-ios` and `x86_64-pc-windows-msvc` on the platform crates and
-   record a failure caused by a missing SDK or build tool as *unverified*, not
-   as an error.
+3. **Verify** with the mandatory checks above (Linux), then type-check the
+   Apple crates without any Apple SDK:
+   `cargo check -p gpui_macos --target aarch64-apple-darwin --features runtime_shaders`
+   and the same for `gpui_ios` / `aarch64-apple-ios`. `gpui_apple/build.rs`
+   gates itself on the *host* OS, so on Linux it emits nothing and the check
+   fails on `stitched_shaders.metal`. For the check only, edit the working tree
+   so `main` tests `CARGO_CFG_TARGET_OS` for `macos`/`ios` at runtime instead
+   of the `#[cfg]`s, and `cbindgen` becomes a plain `[build-dependencies]`
+   entry; discard that edit afterwards, never commit it. Errors there are real
+   failures. Also try `x86_64-pc-windows-msvc` on `gpui_windows`; record a
+   failure caused by a missing Windows build tool as *unverified*.
 4. **Land on `main` directly** only if all of these hold:
    - no content conflict (`UU`/`AA`) outside the root `Cargo.toml`/`Cargo.lock`,
      and no hand edit to source beyond the mechanical steps of the merge
