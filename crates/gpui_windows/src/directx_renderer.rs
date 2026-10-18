@@ -67,6 +67,7 @@ pub(crate) struct DirectXRenderer {
     /// it. Re-resolved when the window moves to another monitor.
     output_monitor: HMONITOR,
     output_color_mode: OutputColorMode,
+    use_extended_srgb: bool,
 
     /// Whether we want to skip drwaing due to device lost events.
     ///
@@ -183,6 +184,7 @@ impl DirectXRenderer {
         hwnd: HWND,
         directx_devices: &DirectXDevices,
         disable_direct_composition: bool,
+        use_extended_srgb: bool,
     ) -> Result<Self> {
         if disable_direct_composition {
             log::info!("Direct Composition is disabled.");
@@ -192,7 +194,8 @@ impl DirectXRenderer {
             .context("Creating DirectX devices")?;
         let atlas = Arc::new(DirectXAtlas::new(&devices.device, &devices.device_context));
 
-        let (output_monitor, output_color_mode) = output_color::resolve_output_color_mode(hwnd);
+        let (output_monitor, output_color_mode) =
+            output_color::resolve_output_color_mode(hwnd, use_extended_srgb);
         log::info!("directx output color mode: {output_color_mode:?}");
         let resources = DirectXResources::new(
             &devices,
@@ -232,6 +235,7 @@ impl DirectXRenderer {
             height: 1,
             output_monitor,
             output_color_mode,
+            use_extended_srgb,
             skip_draws: false,
         })
     }
@@ -546,7 +550,7 @@ impl DirectXRenderer {
             return Ok(());
         }
         self.output_monitor = monitor;
-        let mode = output_color::monitor_color_mode(monitor);
+        let mode = output_color::monitor_color_mode(monitor, self.use_extended_srgb);
         if mode == self.output_color_mode {
             return Ok(());
         }

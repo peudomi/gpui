@@ -49,8 +49,9 @@ pub unsafe fn new_renderer(
     _bounds: gpui::Size<f32>,
     transparent: bool,
     use_display_p3: bool,
+    use_extended_srgb: bool,
 ) -> Renderer {
-    MetalRenderer::new(context, transparent, use_display_p3)
+    MetalRenderer::new(context, transparent, use_display_p3, use_extended_srgb)
 }
 
 pub struct InstanceBufferPool {
@@ -116,6 +117,7 @@ pub struct MetalRenderer {
     presents_with_transaction: bool,
     /// For headless rendering, tracks whether output should be opaque
     opaque: bool,
+    pixel_format: MTLPixelFormat,
     command_queue: CommandQueue,
     paths_rasterization_pipeline_state: metal::RenderPipelineState,
     path_sprites_pipeline_state: metal::RenderPipelineState,
@@ -154,11 +156,24 @@ impl MetalRenderer {
         instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
         transparent: bool,
         use_display_p3: bool,
+        use_extended_srgb: bool,
     ) -> Self {
         let device = Self::create_device();
         let layer = metal::MetalLayer::new();
-        Self::configure_layer(&layer, &device, transparent, use_display_p3);
-        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
+        let pixel_format = Self::configure_layer(
+            &layer,
+            &device,
+            transparent,
+            use_display_p3,
+            use_extended_srgb,
+        );
+        Self::new_internal(
+            device,
+            Some(layer),
+            !transparent,
+            pixel_format,
+            instance_buffer_pool,
+        )
     }
 
     /// Creates a renderer for a CAMetalLayer owned by a platform view, such as
@@ -168,6 +183,7 @@ impl MetalRenderer {
         instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
         layer: &objc2_quartz_core::CAMetalLayer,
         transparent: bool,
+        use_extended_srgb: bool,
     ) -> Self {
         let device = Self::create_device();
         // Both types bind the same Objective-C class, so this only changes which
@@ -176,18 +192,31 @@ impl MetalRenderer {
             metal::MetalLayerRef::from_ptr(ptr::from_ref(layer).cast_mut().cast::<CAMetalLayer>())
         }
         .to_owned();
-        Self::configure_layer(&layer, &device, transparent, false);
-        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
+        let pixel_format =
+            Self::configure_layer(&layer, &device, transparent, false, use_extended_srgb);
+        Self::new_internal(
+            device,
+            Some(layer),
+            !transparent,
+            pixel_format,
+            instance_buffer_pool,
+        )
     }
 
     fn configure_layer(
         layer: &metal::MetalLayerRef,
         device: &metal::DeviceRef,
         transparent: bool,
-        _use_display_p3: bool,
-    ) {
+        use_display_p3: bool,
+        use_extended_srgb: bool,
+    ) -> MTLPixelFormat {
+        let pixel_format = if use_extended_srgb {
+            MTLPixelFormat::RGBA16Float
+        } else {
+            MTLPixelFormat::BGRA8Unorm
+        };
         layer.set_device(device);
-        layer.set_pixel_format(MTLPixelFormat::RGBA16Float);
+        layer.set_pixel_format(pixel_format);
         // Support direct-to-display rendering if the window is not transparent
         // https://developer.apple.com/documentation/metal/managing-your-game-window-for-metal-in-macos
         layer.set_opaque(!transparent);
@@ -203,12 +232,19 @@ impl MetalRenderer {
         objc2_layer.setAllowsNextDrawableTimeout(false);
         objc2_layer.setNeedsDisplayOnBoundsChange(true);
         // Half-float framebuffer tagged extended sRGB, so components outside [0, 1]
-        // reach the compositor instead of being clipped to the sRGB gamut.
-        if let Some(color_space) = objc2_core_graphics::CGColorSpace::with_name(Some(unsafe {
-            objc2_core_graphics::kCGColorSpaceExtendedSRGB
-        })) {
-            objc2_layer.setColorspace(Some(&color_space));
-            log::info!("metal layer: RGBA16Float + extended sRGB");
+        // reach the compositor. A P3 tag here would misread those extended sRGB values.
+        let color_space_name = if use_extended_srgb {
+            Some(unsafe { objc2_core_graphics::kCGColorSpaceExtendedSRGB })
+        } else if use_display_p3 {
+            Some(unsafe { objc2_core_graphics::kCGColorSpaceDisplayP3 })
+        } else {
+            None
+        };
+        if let Some(name) = color_space_name {
+            match objc2_core_graphics::CGColorSpace::with_name(Some(name)) {
+                Some(color_space) => objc2_layer.setColorspace(Some(&color_space)),
+                None => log::error!("unable to create the {name} color space"),
+            }
         }
         // UIKit sizes a view's backing layer itself; only AppKit-hosted
         // layers need to track their superlayer's bounds.
@@ -217,6 +253,7 @@ impl MetalRenderer {
             objc2_quartz_core::CAAutoresizingMask::LayerWidthSizable
                 | objc2_quartz_core::CAAutoresizingMask::LayerHeightSizable,
         );
+        pixel_format
     }
 
     /// Creates a new headless MetalRenderer for offscreen rendering without a window.
@@ -226,7 +263,13 @@ impl MetalRenderer {
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
     pub fn new_headless(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>) -> Self {
         let device = Self::create_device();
-        Self::new_internal(device, None, true, instance_buffer_pool)
+        Self::new_internal(
+            device,
+            None,
+            true,
+            MTLPixelFormat::RGBA16Float,
+            instance_buffer_pool,
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -265,6 +308,7 @@ impl MetalRenderer {
         device: metal::Device,
         layer: Option<metal::MetalLayer>,
         opaque: bool,
+        pixel_format: MTLPixelFormat,
         instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
     ) -> Self {
         #[cfg(feature = "runtime_shaders")]
@@ -319,7 +363,7 @@ impl MetalRenderer {
             "paths_rasterization",
             "path_rasterization_vertex",
             "path_rasterization_fragment",
-            MTLPixelFormat::RGBA16Float,
+            pixel_format,
             PATH_SAMPLE_COUNT,
         );
         let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
@@ -328,7 +372,7 @@ impl MetalRenderer {
             "path_sprites",
             "path_sprite_vertex",
             "path_sprite_fragment",
-            MTLPixelFormat::RGBA16Float,
+            pixel_format,
         );
         let shadows_pipeline_state = build_pipeline_state(
             &device,
@@ -336,7 +380,7 @@ impl MetalRenderer {
             "shadows",
             "shadow_vertex",
             "shadow_fragment",
-            MTLPixelFormat::RGBA16Float,
+            pixel_format,
         );
         let quads_pipeline_state = build_pipeline_state(
             &device,
@@ -344,7 +388,7 @@ impl MetalRenderer {
             "quads",
             "quad_vertex",
             "quad_fragment",
-            MTLPixelFormat::RGBA16Float,
+            pixel_format,
         );
         let underlines_pipeline_state = build_pipeline_state(
             &device,
@@ -352,7 +396,7 @@ impl MetalRenderer {
             "underlines",
             "underline_vertex",
             "underline_fragment",
-            MTLPixelFormat::RGBA16Float,
+            pixel_format,
         );
         let monochrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -360,7 +404,7 @@ impl MetalRenderer {
             "monochrome_sprites",
             "monochrome_sprite_vertex",
             "monochrome_sprite_fragment",
-            MTLPixelFormat::RGBA16Float,
+            pixel_format,
         );
         let polychrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -368,7 +412,7 @@ impl MetalRenderer {
             "polychrome_sprites",
             "polychrome_sprite_vertex",
             "polychrome_sprite_fragment",
-            MTLPixelFormat::RGBA16Float,
+            pixel_format,
         );
         let surfaces_pipeline_state = build_pipeline_state(
             &device,
@@ -376,7 +420,7 @@ impl MetalRenderer {
             "surfaces",
             "surface_vertex",
             "surface_fragment",
-            MTLPixelFormat::RGBA16Float,
+            pixel_format,
         );
 
         let command_queue = device.new_command_queue();
@@ -409,6 +453,7 @@ impl MetalRenderer {
             is_apple_gpu,
             is_unified_memory,
             opaque,
+            pixel_format,
             command_queue,
             paths_rasterization_pipeline_state,
             path_sprites_pipeline_state,
@@ -472,7 +517,7 @@ impl MetalRenderer {
         let texture_descriptor = metal::TextureDescriptor::new();
         texture_descriptor.set_width(size.width.0 as u64);
         texture_descriptor.set_height(size.height.0 as u64);
-        texture_descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA16Float);
+        texture_descriptor.set_pixel_format(self.pixel_format);
         texture_descriptor.set_storage_mode(metal::MTLStorageMode::Private);
         texture_descriptor
             .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
@@ -651,7 +696,7 @@ impl MetalRenderer {
             let texture_descriptor = metal::TextureDescriptor::new();
             texture_descriptor.set_width(size.width.0 as u64);
             texture_descriptor.set_height(size.height.0 as u64);
-            texture_descriptor.set_pixel_format(MTLPixelFormat::RGBA16Float);
+            texture_descriptor.set_pixel_format(self.pixel_format);
             texture_descriptor.set_usage(
                 metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
             );
@@ -707,7 +752,7 @@ impl MetalRenderer {
                 let texture_descriptor = metal::TextureDescriptor::new();
                 texture_descriptor.set_width(size.width.0 as u64);
                 texture_descriptor.set_height(size.height.0 as u64);
-                texture_descriptor.set_pixel_format(MTLPixelFormat::RGBA16Float);
+                texture_descriptor.set_pixel_format(self.pixel_format);
                 texture_descriptor.set_usage(
                     metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
                 );

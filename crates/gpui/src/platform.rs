@@ -2630,6 +2630,10 @@ pub struct WindowOptions {
 
     /// Whether to render the window using the Display P3 color space on macOS.
     pub use_display_p3: bool,
+
+    /// Whether to render into a half-float framebuffer encoded as extended sRGB, so wide-gamut
+    /// colors are not clipped. Takes precedence over `use_display_p3`.
+    pub use_extended_srgb: bool,
 }
 
 /// The variables that can be configured when creating a new window
@@ -2698,6 +2702,8 @@ pub struct WindowParams {
 
     #[cfg(target_os = "macos")]
     pub use_display_p3: bool,
+
+    pub use_extended_srgb: bool,
 }
 
 /// Represents the status of how a window should be opened.
@@ -2760,6 +2766,7 @@ impl Default for WindowOptions {
             window_decorations: None,
             tabbing_identifier: None,
             use_display_p3: false,
+            use_extended_srgb: true,
         }
     }
 }

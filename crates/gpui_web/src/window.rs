@@ -144,7 +144,7 @@ impl WebWindow {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         _handle: AnyWindowHandle,
-        _params: WindowParams,
+        params: WindowParams,
         context: &WgpuContext,
         canvas: web_sys::HtmlCanvasElement,
         surface: wgpu::Surface<'static>,
@@ -167,6 +167,7 @@ impl WebWindow {
                 height: DevicePixels(0),
             },
             transparent: false,
+            use_extended_srgb: params.use_extended_srgb,
             preferred_present_mode: None,
         };
         let renderer = WgpuRenderer::new_from_surface(context, surface, renderer_config)?;

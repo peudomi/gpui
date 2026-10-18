@@ -263,7 +263,7 @@ impl IosWindow {
     #[allow(deprecated)] // Window construction can precede scene connection.
     pub fn new(
         _handle: AnyWindowHandle,
-        _params: WindowParams,
+        params: WindowParams,
         platform: &Rc<IosPlatformState>,
     ) -> anyhow::Result<Self> {
         // Create the window on the main screen
@@ -328,6 +328,7 @@ impl IosWindow {
                 .downcast_ref::<CAMetalLayer>()
                 .ok_or_else(|| anyhow::anyhow!("UIKit view must have a CAMetalLayer"))?,
             false,
+            params.use_extended_srgb,
         );
         renderer.update_drawable_size(size(DevicePixels(pixel_w), DevicePixels(pixel_h)));
 

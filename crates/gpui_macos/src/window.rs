@@ -985,6 +985,7 @@ impl MacWindow {
             window_min_size,
             tabbing_identifier,
             use_display_p3,
+            use_extended_srgb,
             ..
         }: WindowParams,
         cursor_visible: Arc<AtomicBool>,
@@ -1133,6 +1134,7 @@ impl MacWindow {
                     bounds.size.map(|pixels| pixels.as_f32()),
                     false,
                     use_display_p3,
+                    use_extended_srgb,
                 ),
                 request_frame_callback: None,
                 event_callback: None,

@@ -49,15 +49,23 @@ pub(crate) const IDENTITY_MATRIX: [[f32; 4]; 3] = [
     [0.0, 0.0, 1.0, 0.0],
 ];
 
-pub(crate) fn resolve_output_color_mode(hwnd: HWND) -> (HMONITOR, OutputColorMode) {
+pub(crate) fn resolve_output_color_mode(
+    hwnd: HWND,
+    use_extended_srgb: bool,
+) -> (HMONITOR, OutputColorMode) {
     let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-    (monitor, monitor_color_mode(monitor))
+    (monitor, monitor_color_mode(monitor, use_extended_srgb))
 }
 
 /// The output color mode for a monitor. `GPUI_COLOR_MODE=scrgb|srgb` overrides
 /// the detection for debugging (`srgb` means display-referred with an
 /// identity matrix, i.e. the pre-wide-gamut behavior).
-pub(crate) fn monitor_color_mode(monitor: HMONITOR) -> OutputColorMode {
+pub(crate) fn monitor_color_mode(monitor: HMONITOR, use_extended_srgb: bool) -> OutputColorMode {
+    if !use_extended_srgb {
+        return OutputColorMode::DisplayReferred {
+            matrix: IDENTITY_MATRIX,
+        };
+    }
     match std::env::var("GPUI_COLOR_MODE").as_deref() {
         Ok("scrgb") => {
             return OutputColorMode::ScRgb;
