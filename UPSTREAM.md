@@ -11,8 +11,9 @@ to the upstream state, use the `upstream/main` remote-tracking ref after
 
 ## What to bring in
 
-- Merges are **need-driven**: merge when a fix or feature you want has landed
-  upstream. There is no scheduled synchronization.
+- `main` is merged with `upstream/main` **daily** by a scheduled cloud agent
+  (see [Automated daily sync](#automated-daily-sync)) so drift never piles up.
+  Manual merges follow the same procedure.
 - If you only need a single small fix, prefer `git cherry-pick -x <sha>` over a
   merge (`-x` records the source sha in the commit message).
 - Only changes touching the remaining crates (`crates/*`, `tooling/perf`) are
@@ -92,3 +93,35 @@ modification notice in the README (§4(b)) still covers the new changes.
   have. Patches must be general-purpose features.
 - Do not keep GPL code around "to clean up later". It must be zero lines at
   every merge commit.
+
+## Automated daily sync
+
+A scheduled Claude Code cloud agent runs this once a day in a Linux sandbox.
+
+1. **Skip when nothing relevant changed.** Let `BASE=$(git merge-base HEAD upstream/main)`.
+   If `git diff --quiet $BASE upstream/main -- $(git ls-tree -d --name-only HEAD crates/) 'crates/gpui*' tooling/perf rust-toolchain.toml`
+   succeeds, stop without merging.
+2. **Merge** with the procedure above on a work branch. Keep the default merge
+   message (`Merge remote-tracking branch 'upstream/main'`). New upstream
+   `crates/gpui*` crates are kept and added to `members`/`workspace.dependencies`
+   only if they and all their in-repo dependencies are Apache-2.0.
+3. **Verify** with the mandatory checks above (Linux). macOS, iOS and Windows
+   code cannot be fully compiled there; try
+   `cargo check --target <triple>` for `aarch64-apple-darwin`,
+   `aarch64-apple-ios` and `x86_64-pc-windows-msvc` on the platform crates and
+   record a failure caused by a missing SDK or build tool as *unverified*, not
+   as an error.
+4. **Land on `main` directly** only if all of these hold:
+   - no content conflict (`UU`/`AA`) outside the root `Cargo.toml`/`Cargo.lock`,
+   - every Linux check passes,
+   - no license decision was needed (no new non-`gpui*` in-repo crate, no new
+     copyleft dependency, no GPL removal beyond deleting resurrected directories
+     and `ztracing` attributes),
+   - no file the fork modified (`git diff --name-only --diff-filter=M $BASE HEAD -- crates tooling`)
+     was also changed upstream (`git diff --name-only $BASE upstream/main`) in
+     a platform crate that could not be compiled in step 3.
+5. **Otherwise ask for review**: commit the merge as far as it got, push it to
+   `claude/upstream-sync-<YYYY-MM-DD>`, leave `main` untouched, and notify the
+   owner. The run's final report (Korean) lists the upstream range, each
+   conflict and how it was resolved, failing or unverified checks, and notes
+   for the fork change log in `studio-docs/gpui/`.
