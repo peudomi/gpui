@@ -113,6 +113,8 @@ A scheduled Claude Code cloud agent runs this once a day in a Linux sandbox.
    as an error.
 4. **Land on `main` directly** only if all of these hold:
    - no content conflict (`UU`/`AA`) outside the root `Cargo.toml`/`Cargo.lock`,
+     and no hand edit to source beyond the mechanical steps of the merge
+     procedure (e.g. fixing code that auto-merged but no longer compiles),
    - every Linux check passes,
    - no license decision was needed (no new non-`gpui*` in-repo crate, no new
      copyleft dependency, no GPL removal beyond deleting resurrected directories
