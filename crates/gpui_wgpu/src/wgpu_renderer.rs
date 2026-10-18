@@ -122,6 +122,7 @@ struct PathRasterizationVertex {
 pub struct WgpuSurfaceConfig {
     pub size: Size<DevicePixels>,
     pub transparent: bool,
+    pub use_extended_srgb: bool,
     /// Preferred presentation mode. When `Some`, the renderer will use this
     /// mode if supported by the surface, falling back to `Fifo`.
     /// When `None`, defaults to `Fifo` (VSync).
@@ -388,14 +389,16 @@ impl WgpuRenderer {
         atlas: Arc<WgpuAtlas>,
     ) -> anyhow::Result<Self> {
         let surface_caps = surface.get_capabilities(&context.adapter);
-        // Wide-gamut rendering: prefer a half-float surface when the surface
-        // exposes one, so sRGB-encoded components outside [0, 1] survive to the
-        // compositor. Falls back to the usual 8-bit formats everywhere else.
         let preferred_formats = [
             wgpu::TextureFormat::Rgba16Float,
             wgpu::TextureFormat::Bgra8Unorm,
             wgpu::TextureFormat::Rgba8Unorm,
         ];
+        let preferred_formats = if config.use_extended_srgb {
+            &preferred_formats[..]
+        } else {
+            &preferred_formats[1..]
+        };
         let surface_format = preferred_formats
             .iter()
             .find(|f| surface_caps.formats.contains(f))
@@ -2263,6 +2266,7 @@ impl WgpuRenderer {
                 height: gpui::DevicePixels(self.surface_config.height as i32),
             },
             transparent: self.surface_config.alpha_mode != wgpu::CompositeAlphaMode::Opaque,
+            use_extended_srgb: self.surface_config.format == wgpu::TextureFormat::Rgba16Float,
             preferred_present_mode: Some(self.surface_config.present_mode),
         };
         let gpu_context = Rc::clone(gpu_context);

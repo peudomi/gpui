@@ -36,7 +36,12 @@ source (`zed-industries/zed`):
   The mode re-resolves when the window moves between monitors and on
   `WM_DISPLAYCHANGE`/`WM_SETTINGCHANGE` (HDR/ACM toggles, ICC profile
   reassignment); `GPUI_COLOR_MODE=scrgb|srgb` overrides detection for
-  debugging.
+  debugging. The wide-gamut output path is controlled by a new
+  `WindowOptions::use_extended_srgb` flag (default `true`). When it is
+  `false`, Metal uses a `BGRA8Unorm` layer and honors upstream's
+  `use_display_p3`, wgpu drops `Rgba16Float` from its surface preferences, and
+  DirectX presents through an 8-bit swap chain with an identity color matrix.
+  When both flags are set, extended sRGB takes precedence over Display P3.
 
 - App-private platform drag sessions were added for Chrome-style tab tear-off.
   `ExternalDragPayload::AppPrivate` starts an OS drag session carrying only a

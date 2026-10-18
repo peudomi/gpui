@@ -131,6 +131,7 @@ impl WindowsWindowState {
         min_size: Option<Size<Pixels>>,
         appearance: WindowAppearance,
         disable_direct_composition: bool,
+        use_extended_srgb: bool,
         invalidate_devices: Arc<AtomicBool>,
         draw_coordinator: Rc<DrawCoordinator>,
     ) -> Result<Self> {
@@ -152,8 +153,13 @@ impl WindowsWindowState {
         };
         let border_offset = WindowBorderOffset::default();
         let restore_from_minimized = None;
-        let renderer = DirectXRenderer::new(hwnd, directx_devices, disable_direct_composition)
-            .context("Creating DirectX renderer")?;
+        let renderer = DirectXRenderer::new(
+            hwnd,
+            directx_devices,
+            disable_direct_composition,
+            use_extended_srgb,
+        )
+        .context("Creating DirectX renderer")?;
         let callbacks = Callbacks::default();
         let input_handler = None;
         let pending_surrogate = None;
@@ -289,6 +295,7 @@ impl WindowsWindowInner {
             context.min_size,
             context.appearance,
             context.disable_direct_composition,
+            context.use_extended_srgb,
             context.invalidate_devices.clone(),
             context.draw_coordinator.clone(),
         )?;
@@ -491,6 +498,7 @@ struct WindowCreateContext {
     platform_window_handle: HWND,
     appearance: WindowAppearance,
     disable_direct_composition: bool,
+    use_extended_srgb: bool,
     directx_devices: DirectXDevices,
     invalidate_devices: Arc<AtomicBool>,
     draw_coordinator: Rc<DrawCoordinator>,
@@ -611,6 +619,7 @@ impl WindowsWindow {
             platform_window_handle,
             appearance,
             disable_direct_composition,
+            use_extended_srgb: params.use_extended_srgb,
             directx_devices,
             invalidate_devices,
             draw_coordinator,
