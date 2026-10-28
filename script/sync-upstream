@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Merges zed-industries/zed main into the current branch and resolves the
+# mechanical conflicts of "Merge procedure" in UPSTREAM.md.
+# Exit status:
+#   0) merged, or nothing relevant changed upstream
+#   1) error; nothing on the current branch was touched
+#   2) conflicts left for resolution; the merge is left in progress
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+remote=upstream
+remote_url=https://github.com/zed-industries/zed.git
+
+fail() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+git rev-parse -q --verify MERGE_HEAD >/dev/null && fail "a merge is already in progress"
+[[ -z $(git status --porcelain --untracked-files=no) ]] || fail "the working tree has uncommitted changes"
+
+git remote get-url "$remote" >/dev/null 2>&1 || git remote add "$remote" "$remote_url"
+git fetch -q "$remote" main
+upstream=$(git rev-parse "$remote/main")
+base=$(git merge-base HEAD "$upstream")
+
+kept_dirs=()
+while IFS= read -r dir; do kept_dirs+=("$dir"); done < <(git ls-tree -d --name-only HEAD crates/)
+if git diff --quiet "$base" "$upstream" -- "${kept_dirs[@]}" 'crates/gpui*' tooling/perf rust-toolchain.toml; then
+  echo "nothing relevant changed upstream since ${base:0:10}"
+  exit 0
+fi
+echo "upstream: ${base:0:10}..${upstream:0:10} ($(git rev-list --count "$base..$upstream") commits)"
+
+fork_changed=$(git diff --name-only --diff-filter=M "$base" HEAD -- crates tooling | sort)
+upstream_changed=$(git diff --name-only "$base" "$upstream" | sort)
+overlap=$(comm -12 <(printf '%s\n' "$fork_changed") <(printf '%s\n' "$upstream_changed") | sed '/^$/d')
+
+git merge -q --no-commit --no-ff "$remote/main" >/dev/null 2>&1 || true
+git rev-parse -q --verify MERGE_HEAD >/dev/null || fail "git merge did not start"
+
+kept_re="^($(printf '%s|' "${kept_dirs[@]}")crates/gpui[a-z_]*|tooling/perf)/"
+
+deleted=$(git status --porcelain | awk '$1 == "DU" { print $2 }')
+if [[ -n $deleted ]]; then
+  printf '%s\n' "$deleted" | git rm -q --pathspec-from-file=- >/dev/null
+  echo "removed $(printf '%s\n' "$deleted" | wc -l | tr -d ' ') upstream changes to paths this fork deleted"
+fi
+
+added=$(git status --porcelain | awk '$1 == "A" { print $2 }' | grep -Ev "$kept_re" || true)
+if [[ -n $added ]]; then
+  printf '%s\n' "$added" | git rm -q -f --pathspec-from-file=- >/dev/null
+  echo "removed $(printf '%s\n' "$added" | wc -l | tr -d ' ') upstream additions outside the kept crates"
+fi
+
+new_crates=$(git diff --cached --name-only --diff-filter=A -- 'crates/gpui*' | cut -d/ -f1-2 | sort -u |
+  grep -vxF -f <(printf '%s\n' "${kept_dirs[@]}") || true)
+for crate in $new_crates; do
+  echo "new upstream crate, kept but not added to the workspace: $crate"
+done
+
+if git diff --name-only --diff-filter=U | grep -qx Cargo.lock; then
+  git checkout -q --ours Cargo.lock
+  git add Cargo.lock
+fi
+
+if [[ -n $overlap ]]; then
+  echo "files this fork modified that upstream also changed:"
+  printf '  %s\n' $overlap
+fi
+
+unresolved=$(git diff --name-only --diff-filter=U)
+if [[ -n $unresolved || -n $new_crates ]]; then
+  [[ -z $unresolved ]] || {
+    echo "conflicts left for resolution (merge in progress):"
+    printf '  %s\n' $unresolved
+  }
+  exit 2
+fi
+
+if ! cargo metadata --format-version 1 >/dev/null 2>&1; then
+  echo "cargo metadata failed; fix the manifests (merge in progress)"
+  exit 2
+fi
+git add Cargo.lock
+
+git commit -q --no-edit
+echo "merged into $(git rev-parse --abbrev-ref HEAD) ($(git rev-parse --short HEAD))"

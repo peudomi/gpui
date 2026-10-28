@@ -29,30 +29,30 @@ to the upstream state, use the `upstream/main` remote-tracking ref after
 
 ## Merge procedure
 
-```shell
-git fetch upstream
-git merge upstream/main
-```
+Run `script/sync-upstream` on a clean checkout of a work branch. It adds the
+`upstream` remote if missing, stops if nothing relevant changed (see
+[Automated daily sync](#automated-daily-sync), step 1), merges `upstream/main`,
+does the mechanical part of the categories below, and commits with the default
+message if nothing is left. It also prints the files this fork modified that
+upstream changed too.
+
+It exits 0 when the merge is committed or there was nothing relevant, 2 when
+something is left with the merge in progress, and 1 on any other error. On 2,
+resolve what it lists, run `cargo metadata --format-version 1 >/dev/null` so
+`Cargo.lock` matches the manifests, `git add` everything, and
+`git commit --no-edit`.
 
 Conflicts fall into three categories:
 
 1. **Modify/delete conflicts on removed paths** (the vast majority)
-   Upstream modified a file we deleted. Delete them all again:
+   Upstream modified a file we deleted. The script deletes them all again
+   (`DU`). Files that upstream *added* under a removed path arrive staged as
+   `A`; the script removes every addition outside the crates this repository
+   has and new `crates/gpui*` crates.
 
-   ```shell
-   git status --porcelain | awk '$1 == "DU" { print $2 }' | xargs -r git rm -q --
-   ```
-
-   Files that upstream *added* under a removed path do not conflict: they
-   arrive staged as `A` and must be removed too. Keep only additions under the
-   remaining crates:
-
-   ```shell
-   git status --porcelain | awk '$1 == "A" { print $2 }' \
-     | grep -Ev '^(crates/(bench_metrics|collections|gpui[a-z_]*|http_client|http_client_tls|path|refineable|reqwest_client|scheduler|sum_tree|util|util_macros)|tooling/perf)/' \
-     | xargs -r git rm -q -f --
-   ```
-
+   A new upstream `crates/gpui*` crate is kept but not added to the workspace;
+   the script reports it and exits 2. Decide on it with
+   [When upstream adds a new in-repo dependency](#when-upstream-adds-a-new-in-repo-dependency).
    Upstream can also delete a crate we keep (`media` was replaced by `objc2`
    bindings in `4b47ceb9d3`); follow upstream and drop it from `members`.
 
@@ -60,13 +60,14 @@ Conflicts fall into three categories:
    Resolve `Cargo.toml` by hand: keep our trimmed members/default-members/patch
    sections, and accept dependency entries upstream added or updated, except
    the entries [gpui-base](#gpui-base) owns.
-   For `Cargo.lock`, run `git checkout --ours Cargo.lock` and let the next build
-   rewrite it.
+   The script takes our `Cargo.lock` and regenerates it with `cargo metadata`
+   before committing, so the committed lock matches the manifests.
 
 3. **GPL remnants reappearing**
    Upstream keeps using its GPL crates (`ztracing`, `ztracing_macro`, `zlog`),
    so they may come back with every merge.
-   - If a directory such as `crates/ztracing` is resurrected, delete it again.
+   - A resurrected directory such as `crates/ztracing` is removed by the script
+     with the other paths outside the kept crates.
    - New `#[ztracing::instrument]` call sites surface as compile errors. Remove
      the attributes and the `use ztracing::instrument;` lines, then drop the
      `ztracing`/`tracing` dependencies and the `cargo-machete` ignore entries
@@ -85,11 +86,21 @@ If GPUI starts depending on a new crate inside the monorepo:
 
 ## Post-merge verification (mandatory)
 
-```shell
-cargo check --workspace
-cargo test -p sum_tree -p gpui
-script/check-licenses        # full license audit, see below
-```
+Run `script/verify`. It prints one line per check and exits 1 if any check
+failed or was skipped:
+
+- `cargo check --workspace`, `cargo test -p sum_tree -p gpui`, and
+  `script/check-licenses` (full license audit, see below),
+- `gpui_macos`, `gpui_ios` (with `runtime_shaders`) and `gpui-base` for
+  `aarch64-apple-darwin` and `aarch64-apple-ios`. Off Apple hosts this needs
+  the temporary edit described in [Automated daily sync](#automated-daily-sync)
+  step 3; the script applies it and reverts it, and reports a skip if it no
+  longer applies,
+- `gpui_windows` for `x86_64-pc-windows-msvc`. A failure caused by a missing
+  Windows build tool (for example `llvm-rc` for gpui's resource file) is
+  reported as *unverified*, not failed.
+
+Logs go to `$VERIFY_LOG_DIR` or a new temporary directory.
 
 `script/check-licenses` verifies that every local crate is Apache-2.0 and that
 the dependency graph contains no unavoidable copyleft (GPL/AGPL and similar with
@@ -184,7 +195,9 @@ adds the `kit-upstream` remote if missing, and then:
 
 It exits 0 when the merge is committed or there was nothing new, 2 when
 conflicts in `crates/gpui_base` are left with the merge in progress, and 1 on
-any other error. On 2, resolve the listed files, `git add` them, and
+any other error. It also exits 2 when `cargo metadata` fails after the merge,
+which usually means a missing workspace key. On 2, resolve what it lists, run
+`cargo metadata --format-version 1 >/dev/null`, `git add` everything, and
 `git commit --no-edit`. Push `vendor/gpui-component` together with the branch.
 
 Both histories must be complete (no shallow fetch). If upstream moves
@@ -195,38 +208,35 @@ Both histories must be complete (no shallow fetch). If upstream moves
 - A conflict reported under `crates/base` instead of `crates/gpui_base` means
   rename detection lost a file the fork changed heavily. Resolve it into
   `crates/gpui_base` and leave nothing under `crates/base`.
-- `Cargo.lock`: let the next build rewrite it.
 - Compile errors: a missing `corner_radii` field is fork change 1, a missing
   workspace key is the manifest rule above, anything else from GPUI is fork
   change 2.
 
-Verification is the [post-merge verification](#post-merge-verification-mandatory)
-above (`cargo check --workspace` builds `gpui-base`), plus
-`cargo check -p gpui-base --target aarch64-apple-darwin` and
-`--target aarch64-apple-ios`, which need no Apple SDK.
+Verification is `script/verify`
+([post-merge verification](#post-merge-verification-mandatory)); it covers
+`gpui-base` on the host and on the Apple targets.
 
 ## Automated daily sync
 
 A scheduled Claude Code cloud agent runs this once a day in a Linux sandbox.
 
-1. **Skip when nothing relevant changed.** Let `BASE=$(git merge-base HEAD upstream/main)`.
-   If `git diff --quiet $BASE upstream/main -- $(git ls-tree -d --name-only HEAD crates/) 'crates/gpui*' tooling/perf rust-toolchain.toml`
-   succeeds, stop without merging.
-2. **Merge** with the procedure above on a work branch. Keep the default merge
-   message (`Merge remote-tracking branch 'upstream/main'`). New upstream
-   `crates/gpui*` crates are kept and added to `members`/`workspace.dependencies`
-   only if they and all their in-repo dependencies are Apache-2.0.
-3. **Verify** with the mandatory checks above (Linux), then type-check the
-   Apple crates without any Apple SDK:
-   `cargo check -p gpui_macos --target aarch64-apple-darwin --features runtime_shaders`
-   and the same for `gpui_ios` / `aarch64-apple-ios`. `gpui_apple/build.rs`
-   gates itself on the *host* OS, so on Linux it emits nothing and the check
-   fails on `stitched_shaders.metal`. For the check only, edit the working tree
-   so `main` tests `CARGO_CFG_TARGET_OS` for `macos`/`ios` at runtime instead
-   of the `#[cfg]`s, and `cbindgen` becomes a plain `[build-dependencies]`
-   entry; discard that edit afterwards, never commit it. Errors there are real
-   failures. Also try `x86_64-pc-windows-msvc` on `gpui_windows`; record a
-   failure caused by a missing Windows build tool as *unverified*.
+1. **Skip when nothing relevant changed.** `script/sync-upstream` does this:
+   with `BASE=$(git merge-base HEAD upstream/main)`, if
+   `git diff --quiet $BASE upstream/main -- $(git ls-tree -d --name-only HEAD crates/) 'crates/gpui*' tooling/perf rust-toolchain.toml`
+   succeeds, it stops without merging.
+2. **Merge** with `script/sync-upstream` on a work branch, keeping its default
+   merge message (`Merge remote-tracking branch 'upstream/main'`). On exit 2,
+   resolve what it lists as in [Merge procedure](#merge-procedure); fixes made
+   during the merge go into the merge commit. New upstream `crates/gpui*`
+   crates are added to `members`/`workspace.dependencies` only if they and all
+   their in-repo dependencies are Apache-2.0.
+3. **Verify** with `script/verify`. Off Apple hosts it type-checks the Apple
+   crates without any Apple SDK through a temporary edit:
+   `gpui_apple/build.rs` gates itself on the *host* OS, so on Linux it emits
+   nothing and the check fails on `stitched_shaders.metal`. The edit makes
+   `main` test `CARGO_CFG_TARGET_OS` for `macos`/`ios` at runtime instead of the
+   `#[cfg]`s, and makes `cbindgen` a plain `[build-dependencies]` entry. The
+   script reverts it, so it is never committed. Errors there are real failures.
 4. **Land on `main` directly** only if all of these hold:
    - no content conflict (`UU`/`AA`) outside the root `Cargo.toml`/`Cargo.lock`,
      and no hand edit to source beyond the mechanical steps of the merge
@@ -235,9 +245,9 @@ A scheduled Claude Code cloud agent runs this once a day in a Linux sandbox.
    - no license decision was needed (no new non-`gpui*` in-repo crate, no new
      copyleft dependency, no GPL removal beyond deleting resurrected directories
      and `ztracing` attributes),
-   - no file the fork modified (`git diff --name-only --diff-filter=M $BASE HEAD -- crates tooling`)
-     was also changed upstream (`git diff --name-only $BASE upstream/main`) in
-     a platform crate that could not be compiled in step 3.
+   - no file the fork modified that upstream also changed (the list
+     `script/sync-upstream` prints) is in a platform crate that could not be
+     compiled in step 3.
 5. **Otherwise ask for review**: commit the merge as far as it got, push it to
    `claude/upstream-sync-<YYYY-MM-DD>`, leave `main` untouched, and notify the
    owner. The run's final report (Korean) lists the upstream range, each
@@ -253,8 +263,7 @@ the steps above (never on the review branch):
    during the merge go into the merge commit.
 2. **Push `vendor/gpui-component`** to `origin` (a non-force fast-forward)
    whatever happens next, so the next run starts from it.
-3. **Verify** with the checks listed there, using the same temporary Apple
-   build edit as step 3 above for the Apple targets.
+3. **Verify** with `script/verify`.
 4. **Land on `main` directly** only if all of these hold:
    - `script/sync-gpui-base` exited 0, or its only conflicts were
      `ContentMask` literals resolved as fork change 1,

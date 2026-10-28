@@ -90,5 +90,11 @@ leftover=$(git ls-files -- "$src")
   exit 2
 }
 
+if ! cargo metadata --format-version 1 >/dev/null 2>&1; then
+  echo "cargo metadata failed; fix the manifests (merge in progress)"
+  exit 2
+fi
+git add Cargo.lock
+
 git commit -q --no-edit
 echo "$dst: merged $vendor into $(git rev-parse --abbrev-ref HEAD) ($(git rev-parse --short HEAD))"

@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Runs the post-merge checks of UPSTREAM.md and prints one line per check.
+# Off Apple hosts, the Apple targets are checked through a temporary edit of
+# gpui_apple's build script and manifest, reverted before exiting.
+# Exit status: 0 when every check passed or is only unverified for a missing
+# Windows build tool, 1 otherwise. Logs are kept in
+# $VERIFY_LOG_DIR, or in a new temporary directory.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+logs=${VERIFY_LOG_DIR:-$(mktemp -d)}
+mkdir -p "$logs"
+results=()
+failed=0
+
+run() {
+  local name=$1
+  shift
+  if "$@" >"$logs/$name.log" 2>&1; then
+    results+=("pass  $name")
+  else
+    results+=("FAIL  $name  ($logs/$name.log)")
+    failed=1
+  fi
+}
+
+skip() {
+  results+=("skip  $1  ($2)")
+  failed=1
+}
+
+ensure_target() {
+  rustup target list --installed 2>/dev/null | grep -qx "$1" || rustup target add "$1" >/dev/null 2>&1
+}
+
+apple_files=(crates/gpui_apple/build.rs crates/gpui_apple/Cargo.toml)
+apple_edited=0
+lock_was_clean=0
+
+restore_apple() {
+  if [[ $apple_edited == 1 ]]; then
+    git checkout -q -- "${apple_files[@]}"
+    [[ $lock_was_clean == 0 ]] || git checkout -q -- Cargo.lock
+    apple_edited=0
+  fi
+}
+trap restore_apple EXIT
+
+edit_apple() {
+  [[ -z $(git status --porcelain -- "${apple_files[@]}") ]] || return 1
+  git diff --quiet -- Cargo.lock && lock_was_clean=1
+  python3 - "${apple_files[@]}" <<'EOF' || return 1
+import sys
+build, manifest = sys.argv[1:]
+cfg = '#[cfg(any(target_os = "macos", target_os = "ios"))]'
+s = open(build).read()
+call = f'    {cfg}\n    apple_build::run();\n'
+if call not in s or f'{cfg}\nmod apple_build' not in s:
+    sys.exit(1)
+s = s.replace(call, '    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();\n'
+                    '    if os == "macos" || os == "ios" {\n        apple_build::run();\n    }\n')
+s = s.replace(f'{cfg}\nmod apple_build', 'mod apple_build')
+open(build, 'w').write(s)
+m = open(manifest).read()
+header = "[target.'cfg(any(target_os = \"macos\", target_os = \"ios\"))'.build-dependencies]"
+if header not in m or '\n[build-dependencies]' in m:
+    sys.exit(1)
+open(manifest, 'w').write(m.replace(header, '[build-dependencies]'))
+EOF
+  apple_edited=1
+}
+
+run check cargo check --workspace
+run test cargo test -p sum_tree -p gpui
+run licenses script/check-licenses
+
+apple_ready=1
+if [[ $(uname -s) != Darwin ]] && ! edit_apple; then
+  restore_apple
+  apple_ready=0
+fi
+for target in aarch64-apple-darwin aarch64-apple-ios; do
+  if [[ $apple_ready == 0 ]]; then
+    skip "apple-$target" "the temporary gpui_apple edit no longer applies"
+    continue
+  fi
+  ensure_target "$target" || { skip "apple-$target" "rustup could not add $target"; continue; }
+  platform=gpui_macos
+  [[ $target == aarch64-apple-ios ]] && platform=gpui_ios
+  run "$platform-$target" cargo check -p "$platform" --target "$target" --features runtime_shaders
+  run "gpui-base-$target" cargo check -p gpui-base --target "$target"
+done
+restore_apple
+
+if ensure_target x86_64-pc-windows-msvc; then
+  name=gpui_windows-x86_64-pc-windows-msvc
+  if cargo check -p gpui_windows --target x86_64-pc-windows-msvc >"$logs/$name.log" 2>&1; then
+    results+=("pass  $name")
+  elif grep -qE 'NotAttempted\("[^"]+"\)|failed to find tool' "$logs/$name.log"; then
+    results+=("unverified  $name  (a Windows build tool is missing: $logs/$name.log)")
+  else
+    results+=("FAIL  $name  ($logs/$name.log)")
+    failed=1
+  fi
+else
+  skip gpui_windows-x86_64-pc-windows-msvc "rustup could not add the target"
+fi
+
+printf '%s\n' "${results[@]}"
+exit $failed
