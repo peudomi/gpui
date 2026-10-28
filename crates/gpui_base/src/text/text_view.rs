@@ -920,6 +920,7 @@ impl Element for TextView {
             // line of glyphs is never cut in half.
             let mask = ContentMask {
                 bounds: Bounds::from_corners(bounds.origin, point(bounds.right(), clip_bottom)),
+                ..Default::default()
             };
             window.with_content_mask(Some(mask), |window| {
                 request_layout.element.paint(window, cx);

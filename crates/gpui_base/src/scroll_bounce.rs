@@ -354,11 +354,17 @@ impl Element for ScrollBounce {
             }
         };
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            window.with_element_offset(point(px(0.), px(offset)), |window| {
-                self.child.prepaint(window, cx);
-            });
-        });
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds,
+                ..Default::default()
+            }),
+            |window| {
+                window.with_element_offset(point(px(0.), px(offset)), |window| {
+                    self.child.prepaint(window, cx);
+                });
+            },
+        );
         // The child's fresh metrics can remove overflow during a drag.
         // Reset against those metrics as well, and repaint any displaced frame.
         if self.scroll_wheel && max_scroll_extent(self.handle.as_ref()) <= px(0.) {
@@ -543,9 +549,13 @@ impl Element for ScrollBounce {
                 }
             });
         }
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            self.child.paint(window, cx)
-        });
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds,
+                ..Default::default()
+            }),
+            |window| self.child.paint(window, cx),
+        );
         // After the children, so that the areas inside act first.
         if self.scroll_wheel {
             let bounces = self.enabled && !cx.reduce_motion();

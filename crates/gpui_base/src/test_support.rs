@@ -132,7 +132,7 @@ impl ElementSnapshot {
     }
 }
 
-// Each Window owns a distinct Arc<WindowTextSystem>, stable even during initial
+// Each Window owns a distinct Rc<WindowTextSystem>, stable even during initial
 // drawing before the Window itself is boxed. Its identity distinguishes equal
 // WindowIds in different Apps. Entries never own a Window or a view.
 type WindowKey = usize;
@@ -222,7 +222,7 @@ pub fn find(window: &Window, scope: &[ElementId], id: &ElementId) -> Option<Elem
 pub fn find_all(window: &Window, scope: &[ElementId], id: &ElementId) -> Vec<ElementSnapshot> {
     let mut matches: Vec<_> = REGISTRY.with(|registry| {
         let registry = registry.borrow();
-        let Some(entries) = registry.get(&(std::sync::Arc::as_ptr(window.text_system()) as usize))
+        let Some(entries) = registry.get(&(Rc::as_ptr(window.text_system()) as usize))
         else {
             return Vec::new();
         };
@@ -246,7 +246,7 @@ pub fn snapshots(window: &Window) -> Vec<ElementSnapshot> {
     REGISTRY.with(|registry| {
         registry
             .borrow()
-            .get(&(std::sync::Arc::as_ptr(window.text_system()) as usize))
+            .get(&(Rc::as_ptr(window.text_system()) as usize))
             .map(|entries| {
                 entries
                     .values()
@@ -420,7 +420,7 @@ impl<E: Element<PrepaintState = Option<Hitbox>> + InteractiveElement> Element fo
             window.with_element_state(global_id, |state: Option<Rc<Registration>>, window| {
                 let registration = state.unwrap_or_else(|| {
                     Rc::new(Registration {
-                        window: std::sync::Arc::as_ptr(window.text_system()) as usize,
+                        window: Rc::as_ptr(window.text_system()) as usize,
                         global_id: global_id.clone(),
                         facts: RefCell::new(facts.clone()),
                         semantic_owner: RefCell::new(None),

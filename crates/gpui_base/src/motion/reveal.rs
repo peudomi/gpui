@@ -98,9 +98,15 @@ impl Element for MotionReveal {
         if changed {
             window.request_animation_frame();
         }
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            self.child.prepaint_at(bounds.origin, window, cx);
-        });
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds,
+                ..Default::default()
+            }),
+            |window| {
+                self.child.prepaint_at(bounds.origin, window, cx);
+            },
+        );
     }
 
     fn paint(
@@ -113,8 +119,14 @@ impl Element for MotionReveal {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            self.child.paint(window, cx);
-        });
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds,
+                ..Default::default()
+            }),
+            |window| {
+                self.child.paint(window, cx);
+            },
+        );
     }
 }

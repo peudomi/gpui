@@ -3693,7 +3693,10 @@ mod tests {
                     Hitbox {
                         id: HitboxId::placeholder(),
                         bounds,
-                        content_mask: ContentMask { bounds },
+                        content_mask: ContentMask {
+                            bounds,
+                            ..Default::default()
+                        },
                         behavior: HitboxBehavior::Normal,
                     },
                     bounds,
@@ -3852,7 +3855,10 @@ mod tests {
         let hitbox = Hitbox {
             id: HitboxId::placeholder(),
             bounds,
-            content_mask: ContentMask { bounds },
+            content_mask: ContentMask {
+                bounds,
+                ..Default::default()
+            },
             behavior: HitboxBehavior::Normal,
         };
         let scope = TextSelectionScopeId::from_raw(7);
@@ -4738,7 +4744,10 @@ mod tests {
                             Hitbox {
                                 id: HitboxId::placeholder(),
                                 bounds: collapsed,
-                                content_mask: ContentMask { bounds: collapsed },
+                                content_mask: ContentMask {
+                                    bounds: collapsed,
+                                    ..Default::default()
+                                },
                                 behavior: HitboxBehavior::Normal,
                             },
                             collapsed,
@@ -4901,7 +4910,10 @@ mod tests {
             let hitbox = Hitbox {
                 id: HitboxId::placeholder(),
                 bounds,
-                content_mask: ContentMask { bounds },
+                content_mask: ContentMask {
+                    bounds,
+                    ..Default::default()
+                },
                 behavior: HitboxBehavior::Normal,
             };
             selection.register(

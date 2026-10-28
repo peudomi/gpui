@@ -488,7 +488,11 @@ impl<H: ScrollbarHandle + Clone> Element for ScrollableMask<H> {
             })
             .unwrap_or_default();
 
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+        let content_mask = ContentMask {
+            bounds,
+            ..Default::default()
+        };
+        window.with_content_mask(Some(content_mask), |window| {
             if let Some(color) = self.debug {
                 window.paint_quad(PaintQuad {
                     bounds,

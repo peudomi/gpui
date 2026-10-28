@@ -1320,14 +1320,14 @@ impl DockArea {
             .size_from_pointer(pointer)
             .min(sizing.clamp(Pixels::MAX));
 
+        let strip = self.renderer.closed_dock_extent(placement);
         let Some(pane) = self.docks.get_mut(&placement) else {
             return;
         };
         let was_open = pane.dock.is_open();
-        if placement == DockPlacement::Bottom && pane.dock.is_collapsible() && size < PANEL_MIN_SIZE
-        {
-            pane.dock.set_open(size > CLOSED_BOTTOM_STRIP);
-            pane.dock.set_live_size(Some(size.max(CLOSED_BOTTOM_STRIP)));
+        if strip > px(0.) && pane.dock.is_collapsible() && size < PANEL_MIN_SIZE {
+            pane.dock.set_open(size > strip);
+            pane.dock.set_live_size(Some(size.max(strip)));
         } else {
             pane.dock.set_open(true);
             pane.dock.set_live_size(None);
@@ -1355,7 +1355,8 @@ impl DockArea {
         };
         pane.dock.set_live_size(None);
 
-        let open = size >= (CLOSED_BOTTOM_STRIP + PANEL_MIN_SIZE) / 2.;
+        let strip = self.renderer.closed_dock_extent(placement);
+        let open = size >= (strip + PANEL_MIN_SIZE) / 2.;
         if open {
             pane.dock.set_size(PANEL_MIN_SIZE);
         }
@@ -1484,7 +1485,10 @@ impl DockArea {
         // dock keeps a strip so its tab bar stays clickable. Nothing is drawn
         // for a dock with no extent, and the renderer is not asked for chrome
         // nobody can see.
-        let size = dock_extent(&dock);
+        let size = match dock.is_open() {
+            true => dock_extent(&dock),
+            false => self.renderer.closed_dock_extent(placement),
+        };
         if size <= px(0.) {
             return Some(div().into_any_element());
         }
@@ -1998,6 +2002,13 @@ pub trait DockAreaRenderer: 'static {
         cx: &mut App,
     ) -> Option<Arc<dyn PanelView>> {
         None
+    }
+
+    fn closed_dock_extent(&self, placement: DockPlacement) -> Pixels {
+        match placement {
+            DockPlacement::Bottom => CLOSED_BOTTOM_STRIP,
+            _ => px(0.),
+        }
     }
 
     fn tab_group_renderer(&self) -> Rc<dyn TabGroupRenderer>;

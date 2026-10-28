@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     ops::Range,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use gpui::{
@@ -2021,7 +2021,7 @@ impl std::fmt::Debug for TableColumnWidthsCache {
 }
 
 struct TableColumnWidths {
-    text_system: Weak<gpui::WindowTextSystem>,
+    window: gpui::WindowId,
     /// The styles the header row and the body rows render with.
     text_styles: TableTextStyles,
     rem_size: Pixels,
@@ -3345,10 +3345,7 @@ fn measure_table_columns(
                     && cached.rem_size == rem_size
                     && cached.mono_family == mono_family
                     && cached.inline_code == inline_code
-                    && cached
-                        .text_system
-                        .upgrade()
-                        .is_some_and(|system| Arc::ptr_eq(&system, window.text_system()))
+                    && cached.window == window.window_handle().window_id()
             })
             .cloned()
     });
@@ -3356,7 +3353,7 @@ fn measure_table_columns(
         let (widths, custom_cells) =
             measure_table_text_columns(table, col_count, &text_styles, node_cx, window, cx);
         let measured = Arc::new(TableColumnWidths {
-            text_system: Arc::downgrade(window.text_system()),
+            window: window.window_handle().window_id(),
             text_styles: text_styles.clone(),
             rem_size,
             mono_family,
