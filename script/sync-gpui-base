@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Merges longbridge/gpui-component main into crates/gpui_base through the
+# vendor/gpui-component branch. See "gpui-base" in UPSTREAM.md.
+# Exit status:
+#   0) merged into the current branch, or already up to date
+#   1) error; nothing on the current branch was touched
+#   2) conflicts in crates/gpui_base; the merge is left in progress
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+remote=kit-upstream
+remote_url=https://github.com/longbridge/gpui-component.git
+vendor=vendor/gpui-component
+src=crates/base
+dst=crates/gpui_base
+
+fail() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+git rev-parse -q --verify MERGE_HEAD >/dev/null && fail "a merge is already in progress"
+[[ -z $(git status --porcelain --untracked-files=no) ]] || fail "the working tree has uncommitted changes"
+
+git remote get-url "$remote" >/dev/null 2>&1 || git remote add "$remote" "$remote_url"
+git fetch -q "$remote" main
+upstream=$(git rev-parse "$remote/main")
+
+git fetch -q origin "+refs/heads/$vendor:refs/remotes/origin/$vendor" 2>/dev/null || true
+if ! git rev-parse -q --verify "refs/heads/$vendor" >/dev/null; then
+  git rev-parse -q --verify "refs/remotes/origin/$vendor" >/dev/null || fail "no $vendor branch here or on origin"
+  git branch -q "$vendor" "origin/$vendor"
+elif git rev-parse -q --verify "refs/remotes/origin/$vendor" >/dev/null; then
+  if git merge-base --is-ancestor "$vendor" "origin/$vendor"; then
+    git branch -q -f "$vendor" "origin/$vendor"
+  elif ! git merge-base --is-ancestor "origin/$vendor" "$vendor"; then
+    fail "$vendor has diverged from origin/$vendor"
+  fi
+fi
+
+vendor_before=$(git rev-parse "$vendor")
+if git merge-base --is-ancestor "$upstream" "$vendor"; then
+  echo "vendor: already contains $remote/main (${upstream:0:10})"
+else
+  tree=$(mktemp -d)/vendor
+  git worktree add -q "$tree" "$vendor"
+  trap 'git worktree remove --force "$tree"' EXIT
+  git -C "$tree" merge -q --no-commit --no-ff "$remote/main" >/dev/null 2>&1 || true
+  outside=$(git -C "$tree" ls-files | grep -v "^$src/" | sort -u || true)
+  if [[ -n $outside ]]; then
+    printf '%s\n' "$outside" | git -C "$tree" rm -q -f -r --pathspec-from-file=- >/dev/null
+  fi
+  unresolved=$(git -C "$tree" diff --name-only --diff-filter=U)
+  [[ -z $unresolved ]] || fail "unexpected conflicts in $vendor:"$'\n'"$unresolved"
+  git -C "$tree" commit -q --no-edit
+  git worktree remove --force "$tree"
+  trap - EXIT
+  echo "vendor: merged $remote/main (${upstream:0:10}) into $vendor ($(git rev-parse --short "$vendor"))"
+  echo "  upstream commits: $(git rev-list --count "$vendor_before..$upstream")," \
+    "touching $src: $(git rev-list --count "$vendor_before..$upstream" -- "$src")"
+fi
+
+if git merge-base --is-ancestor "$vendor" HEAD; then
+  echo "$dst: already up to date"
+  exit 0
+fi
+
+git merge -q --no-commit --no-ff "$vendor" >/dev/null 2>&1 || true
+
+added=$(git diff --cached --name-only --diff-filter=A -- "$src")
+for path in $added; do
+  target="$dst/${path#"$src"/}"
+  mkdir -p "$(dirname "$target")"
+  git mv "$path" "$target"
+  echo "moved new file: $path -> $target"
+done
+[[ ! -d $src ]] || find "$src" -type d -empty -delete
+
+unresolved=$(git diff --name-only --diff-filter=U)
+if [[ -n $unresolved ]]; then
+  echo "conflicts left for resolution (merge in progress):"
+  printf '  %s\n' $unresolved
+  exit 2
+fi
+
+leftover=$(git ls-files -- "$src")
+[[ -z $leftover ]] || {
+  echo "files left under $src (merge in progress):"
+  printf '  %s\n' $leftover
+  exit 2
+}
+
+git commit -q --no-edit
+echo "$dst: merged $vendor into $(git rev-parse --abbrev-ref HEAD) ($(git rev-parse --short HEAD))"

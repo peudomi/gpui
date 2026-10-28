@@ -102,6 +102,15 @@ source (`zed-industries/zed`):
   and HLSL; hardware video `surface` primitives still clip rectangularly. Nested
   masks intersect corner by corner, so a corner the intersection did not cut
   keeps its rounding.
+- `crates/gpui_base` is the `gpui-base` crate of
+  [`longbridge/gpui-component`](https://github.com/longbridge/gpui-component)
+  (Apache-2.0, copyright Longbridge), brought in with its history through the
+  `vendor/gpui-component` branch. It builds against the GPUI crates of this repository instead of
+  the `gpui-pre-*` snapshots upstream uses. Its changes from upstream: struct
+  literals of `ContentMask` fill the new `corner_radii` field, small adaptations
+  to GPUI API differences, and a `DockAreaRenderer::closed_dock_extent` hook that
+  lets a dock renderer decide how much room a closed dock keeps. The root
+  workspace takes `lsp-types` from crates.io for it instead of Zed's fork.
 
 These changes are documented in detail, with code, rationale, and open
 questions, in [docs/fork](docs/fork/README.md).
@@ -113,6 +122,7 @@ Further modifications will be tracked in this repository's git history.
 Apache License 2.0. See [LICENSE-APACHE](LICENSE-APACHE).
 
 Copyright of the original code remains with Zed Industries, Inc. and the Zed
+contributors, and for `crates/gpui_base` with Longbridge and the gpui-component
 contributors. This fork contains no GPL-licensed code: every remaining crate is
 licensed under Apache-2.0, and third-party dependencies are permissively
 licensed (MIT/Apache/BSD/MPL-2.0 and similar, plus CDLA-Permissive-2.0 for the
@@ -124,7 +134,8 @@ affiliated with or endorsed by Zed Industries.
 ## Upstream
 
 The `upstream` remote tracks `zed-industries/zed`. Only GPUI-related changes are
-merged from upstream; the merge workflow, conflict-resolution rules, and the
+merged from upstream. `crates/gpui_base` follows `longbridge/gpui-component`
+through the `kit-upstream` remote. The merge workflow, conflict-resolution rules, and the
 mandatory post-merge license audit (`script/check-licenses`) are documented in
 [UPSTREAM.md](UPSTREAM.md).
 
