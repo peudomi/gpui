@@ -71,6 +71,7 @@ pub struct WindowsWindowState {
     pub hovered: Cell<bool>,
     pub last_visibility: Cell<Option<WindowVisibility>>,
     pub direct_manipulation: DirectManipulationHandler,
+    pub(crate) pen: crate::pen::PenInput,
 
     pub renderer: RefCell<DirectXRenderer>,
     /// Set when the next `draw_window` call must be treated as a forced
@@ -134,6 +135,7 @@ impl WindowsWindowState {
         use_extended_srgb: bool,
         invalidate_devices: Arc<AtomicBool>,
         draw_coordinator: Rc<DrawCoordinator>,
+        pen_settings: Rc<crate::pen::PenSettings>,
     ) -> Result<Self> {
         let scale_factor = {
             let monitor_dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
@@ -206,6 +208,7 @@ impl WindowsWindowState {
             invalidate_devices,
             draw_coordinator,
             direct_manipulation,
+            pen: crate::pen::PenInput::new(hwnd, pen_settings),
             a11y: RefCell::new(None),
             last_drag_session_cursor: Cell::new(None),
         })
@@ -298,6 +301,7 @@ impl WindowsWindowInner {
             context.use_extended_srgb,
             context.invalidate_devices.clone(),
             context.draw_coordinator.clone(),
+            context.pen_settings.clone(),
         )?;
 
         Ok(Rc::new(Self {
@@ -502,6 +506,7 @@ struct WindowCreateContext {
     directx_devices: DirectXDevices,
     invalidate_devices: Arc<AtomicBool>,
     draw_coordinator: Rc<DrawCoordinator>,
+    pen_settings: Rc<crate::pen::PenSettings>,
     parent_hwnd: Option<HWND>,
 }
 
@@ -530,6 +535,7 @@ impl WindowsWindow {
             directx_devices,
             invalidate_devices,
             draw_coordinator,
+            pen_settings,
         } = creation_info;
         register_window_class(icon);
         let parent_hwnd = if params.kind == WindowKind::Dialog {
@@ -623,6 +629,7 @@ impl WindowsWindow {
             directx_devices,
             invalidate_devices,
             draw_coordinator,
+            pen_settings,
             parent_hwnd,
         };
         let creation_result = unsafe {

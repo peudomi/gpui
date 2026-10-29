@@ -98,6 +98,7 @@ pub(crate) struct WindowsPlatformState {
     /// Shared with each window to coordinate draws across windows on the UI
     /// thread; see [`DrawCoordinator`].
     pub(crate) draw_coordinator: Rc<DrawCoordinator>,
+    pub(crate) pen_settings: Rc<crate::pen::PenSettings>,
     directx_devices: RefCell<Option<DirectXDevices>>,
     low_power_mode_enabled: Cell<bool>,
 }
@@ -129,6 +130,7 @@ impl WindowsPlatformState {
             current_cursor: Cell::new(current_cursor),
             cursor_visible: Arc::new(AtomicBool::new(true)),
             draw_coordinator: Rc::new(DrawCoordinator::new()),
+            pen_settings: Rc::default(),
             directx_devices: RefCell::new(directx_devices),
             low_power_mode_enabled: Cell::new(false),
             menus: RefCell::new(Vec::new()),
@@ -328,6 +330,7 @@ impl WindowsPlatform {
             directx_devices: self.inner.state.directx_devices.borrow().clone().unwrap(),
             invalidate_devices: self.invalidate_devices.clone(),
             draw_coordinator: self.inner.state.draw_coordinator.clone(),
+            pen_settings: self.inner.state.pen_settings.clone(),
         }
     }
 
@@ -1044,6 +1047,19 @@ impl Platform for WindowsPlatform {
         self.inner.state.cursor_visible.load(Ordering::Relaxed)
     }
 
+    fn set_pen_source(&self, source: PenSource) {
+        self.inner.state.pen_settings.set_requested(source);
+        for handle in self.raw_window_handles.read().iter() {
+            if let Some(window) = window_from_hwnd(handle.as_raw()) {
+                window.state.pen.apply_source(handle.as_raw());
+            }
+        }
+    }
+
+    fn active_pen_source(&self) -> Option<PenSource> {
+        Some(self.inner.state.pen_settings.active())
+    }
+
     fn should_auto_hide_scrollbars(&self) -> bool {
         should_auto_hide_scrollbars().log_err().unwrap_or(false)
     }
@@ -1510,6 +1526,7 @@ pub(crate) struct WindowCreationInfo {
     pub(crate) invalidate_devices: Arc<AtomicBool>,
     /// Shared with [`WindowsPlatformState::draw_coordinator`] and every other window.
     pub(crate) draw_coordinator: Rc<DrawCoordinator>,
+    pub(crate) pen_settings: Rc<crate::pen::PenSettings>,
 }
 
 struct PlatformWindowCreateContext {

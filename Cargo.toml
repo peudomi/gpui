@@ -66,6 +66,7 @@ scheduler = { path = "crates/scheduler" }
 sum_tree = { path = "crates/sum_tree" }
 util = { path = "crates/util" }
 util_macros = { path = "crates/util_macros" }
+wintab = "0.1"
 
 #
 # External crates

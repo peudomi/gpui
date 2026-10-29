@@ -582,6 +582,15 @@ pub trait Platform: 'static {
     /// Returns whether the mouse cursor is currently visible.
     fn is_cursor_visible(&self) -> bool;
 
+    /// Selects where pen input comes from. Platforms with a single source ignore it.
+    fn set_pen_source(&self, _source: crate::PenSource) {}
+
+    /// The pen source in use, never [`PenSource::Auto`](crate::PenSource::Auto).
+    /// `None` on platforms with a single source.
+    fn active_pen_source(&self) -> Option<crate::PenSource> {
+        None
+    }
+
     fn should_auto_hide_scrollbars(&self) -> bool;
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;

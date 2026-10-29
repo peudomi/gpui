@@ -2037,6 +2037,18 @@ impl App {
         self.platform.open_with_system(path)
     }
 
+    /// Selects where pen input comes from. See [`PenSource`](crate::PenSource); it defaults
+    /// to [`PenSource::Auto`](crate::PenSource::Auto).
+    pub fn set_pen_source(&self, source: crate::PenSource) {
+        self.platform.set_pen_source(source);
+    }
+
+    /// The pen source in use, never [`PenSource::Auto`](crate::PenSource::Auto). `None` on
+    /// platforms that offer no choice.
+    pub fn active_pen_source(&self) -> Option<crate::PenSource> {
+        self.platform.active_pen_source()
+    }
+
     /// Returns whether the user has configured scrollbars to auto-hide at the platform level.
     pub fn should_auto_hide_scrollbars(&self) -> bool {
         self.platform.should_auto_hide_scrollbars()

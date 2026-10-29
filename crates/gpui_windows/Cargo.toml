@@ -71,6 +71,7 @@ windows = { workspace = true, features = [
 windows-core.workspace = true
 windows-numerics = "0.3"
 windows-registry.workspace = true
+wintab.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies.scap]
 workspace = true

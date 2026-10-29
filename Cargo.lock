@@ -3540,6 +3540,7 @@ dependencies = [
  "windows-core 0.62.2",
  "windows-numerics 0.3.1",
  "windows-registry 0.6.1",
+ "wintab",
  "zed-scap 0.0.8-zed (git+https://github.com/zed-industries/scap?rev=b5c86ec58dd4b6b7732bf6ac8be03d6b1f190a82)",
 ]
 
@@ -9630,6 +9631,25 @@ checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
 dependencies = [
  "cfg-if",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "wintab"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6df218b77b5e4c839763015e900d900b29f8bde552640ee65d9c51eeb72fdf3a"
+dependencies = [
+ "windows 0.62.2",
+ "wintab-sys",
+]
+
+[[package]]
+name = "wintab-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d3d0743ba07fe30ca1ccc1471ee50adf32bc70932b86a00c8f1051177950de2"
+dependencies = [
+ "windows 0.62.2",
 ]
 
 [[package]]

@@ -111,6 +111,17 @@ source (`zed-industries/zed`):
   to GPUI API differences, and a `DockAreaRenderer::closed_dock_extent` hook that
   lets a dock renderer decide how much room a closed dock keeps. The root
   workspace takes `lsp-types` from crates.io for it instead of Zed's fork.
+- Pen input was added: `PenEvent` (coalesced samples with pressure, tilt,
+  rotation, timestamps, predicted and provisional samples), `PenGestureEvent`,
+  `on_pen` / `capture_pen` listeners, and per-stroke claiming in `Window`, so a
+  claimed stroke stays with its element and the platform does not turn it into
+  touch or mouse input. Click handlers and scroll areas handle pen strokes. The
+  iOS backend reads Apple Pencil touches, hover and pencil interactions. The
+  Windows backend reads Windows Ink (`WM_POINTER*`) and Wintab, chosen with
+  `App::set_pen_source` (`PenSource::Auto` prefers Wintab), disables the system
+  pen gestures, and drops the pointer and mouse messages of claimed strokes.
+  Wintab goes through the `wintab` crate. The pen example moved to
+  `crates/gpui/examples/pen` and runs on Windows and iOS.
 
 These changes are documented in detail, with code, rationale, and open
 questions, in [docs/fork](docs/fork/README.md).

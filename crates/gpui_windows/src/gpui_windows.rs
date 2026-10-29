@@ -13,6 +13,7 @@ mod display;
 mod events;
 mod keyboard;
 mod output_color;
+mod pen;
 mod platform;
 mod system_notifications;
 mod system_settings;

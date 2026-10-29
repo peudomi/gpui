@@ -156,6 +156,18 @@ impl WindowsWindowInner {
             WM_INPUTLANGCHANGE => self.handle_input_language_changed(),
             WM_SHOWWINDOW => self.handle_window_visibility_changed(handle, wparam),
             DM_POINTERHITTEST => self.handle_dm_pointer_hit_test(wparam),
+            WM_POINTERENTER
+            | WM_POINTERLEAVE
+            | WM_POINTERDOWN
+            | WM_POINTERUPDATE
+            | WM_POINTERUP
+            | WM_POINTERCAPTURECHANGED => self.handle_pointer_msg(handle, msg, wparam),
+            crate::pen::WM_TABLET_QUERYSYSTEMGESTURESTATUS => {
+                Some(crate::pen::DISABLED_SYSTEM_GESTURES)
+            }
+            crate::pen::WT_DEFBASE..=crate::pen::WT_MAX => {
+                self.handle_wintab_msg(handle, msg, wparam, lparam)
+            }
             WM_GETOBJECT => self.handle_wm_getobject(wparam, lparam),
             WM_GPUI_CURSOR_STYLE_CHANGED
             | WM_GPUI_FORCE_UPDATE_WINDOW
@@ -352,6 +364,9 @@ impl WindowsWindowInner {
     }
 
     fn handle_mouse_move_msg(&self, handle: HWND, lparam: LPARAM, wparam: WPARAM) -> Option<isize> {
+        if self.pen_consumes_mouse(handle, false, false) {
+            return Some(0);
+        }
         self.start_tracking_mouse(handle, TME_LEAVE);
         self.restore_cursor_after_hide();
 
@@ -383,6 +398,60 @@ impl WindowsWindowInner {
         self.state.callbacks.input.set(Some(func));
 
         if handled { Some(0) } else { Some(1) }
+    }
+
+    fn handle_pointer_msg(&self, handle: HWND, msg: u32, wparam: WPARAM) -> Option<isize> {
+        let scale_factor = self.state.scale_factor.get();
+        self.dispatch_pen_events(self.state.pen.poll_wintab(handle, scale_factor));
+        match self.state.pen.pointer(handle, msg, wparam, scale_factor)? {
+            crate::pen::PointerAction::Dispatch(event) => self.dispatch_pen(event).then_some(0),
+            crate::pen::PointerAction::Consume => Some(0),
+            crate::pen::PointerAction::Default => None,
+        }
+    }
+
+    fn handle_wintab_msg(
+        &self,
+        handle: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> Option<isize> {
+        let events = self.state.pen.wintab_message(
+            handle,
+            msg,
+            wparam,
+            lparam,
+            self.state.scale_factor.get(),
+        )?;
+        self.dispatch_pen_events(events);
+        Some(0)
+    }
+
+    fn dispatch_pen_events(&self, events: impl IntoIterator<Item = PenEvent>) {
+        for event in events {
+            self.dispatch_pen(event);
+        }
+    }
+
+    fn dispatch_pen(&self, event: PenEvent) -> bool {
+        let (phase, in_contact) = (event.phase, event.in_contact);
+        let Some(mut func) = self.state.callbacks.input.take() else {
+            return false;
+        };
+        let claimed = func(PlatformInput::Pen(event)).default_prevented;
+        self.state.callbacks.input.set(Some(func));
+        self.state.pen.dispatched(phase, in_contact, claimed);
+        claimed
+    }
+
+    fn pen_consumes_mouse(&self, handle: HWND, down: bool, up: bool) -> bool {
+        self.dispatch_pen_events(
+            self.state
+                .pen
+                .poll_wintab(handle, self.state.scale_factor.get()),
+        );
+        self.state.pen.consumes_mouse(down, up)
     }
 
     fn handle_mouse_leave_msg(&self) -> Option<isize> {
@@ -475,6 +544,9 @@ impl WindowsWindowInner {
         button: MouseButton,
         lparam: LPARAM,
     ) -> Option<isize> {
+        if self.pen_consumes_mouse(handle, true, false) {
+            return Some(0);
+        }
         unsafe { SetCapture(handle) };
 
         let Some(mut func) = self.state.callbacks.input.take() else {
@@ -501,10 +573,13 @@ impl WindowsWindowInner {
 
     fn handle_mouse_up_msg(
         &self,
-        _handle: HWND,
+        handle: HWND,
         button: MouseButton,
         lparam: LPARAM,
     ) -> Option<isize> {
+        if self.pen_consumes_mouse(handle, false, true) {
+            return Some(0);
+        }
         unsafe { ReleaseCapture().log_err() };
 
         let Some(mut func) = self.state.callbacks.input.take() else {
@@ -790,6 +865,7 @@ impl WindowsWindowInner {
 
     fn handle_activate_msg(self: &Rc<Self>, wparam: WPARAM) -> Option<isize> {
         let activated = wparam.loword() > 0;
+        self.state.pen.activate(activated);
 
         let events = self
             .state

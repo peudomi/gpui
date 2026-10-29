@@ -6,6 +6,21 @@ use collections::FxHashSet;
 use smallvec::SmallVec;
 use std::time::Duration;
 
+/// Where pen input comes from, on platforms that offer more than one source.
+///
+/// Only Windows offers a choice; other platforms ignore it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PenSource {
+    /// Wintab when a tablet driver provides it, Windows Ink otherwise.
+    #[default]
+    Auto,
+    /// Windows Ink: available for every digitizer, but drivers may disable it.
+    WindowsInk,
+    /// Wintab: full driver resolution, but only with a tablet driver installed. Falls back
+    /// to Windows Ink when the driver does not provide it.
+    Wintab,
+}
+
 /// Which end of the pen produced the event.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PenTip {
