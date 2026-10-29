@@ -43,7 +43,7 @@ use objc2_ui_kit::{
     UIGestureRecognizerDelegate, UIPanGestureRecognizer, UIRectCorner, UIRectEdge, UIScreen,
     UIScreenEdgePanGestureRecognizer, UIScrollTypeMask, UITouch, UITouchType, UITraitCollection,
     UITraitEnvironment, UIUserInterfaceLayoutDirection, UIUserInterfaceStyle, UIView,
-    UIViewAutoresizing, UIViewController, UIWindow, UIWindowScene,
+    UICoordinateSpace, UIViewAutoresizing, UIViewController, UIWindow, UIWindowScene,
 };
 use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
@@ -213,8 +213,8 @@ define_class!(
             super::pen::owns(recognizer)
                 || self
                     .ivars()
-                .with_window(|window| window.begin_back_gesture(recognizer))
-                .unwrap_or(false)
+                    .with_window(|window| window.begin_back_gesture(recognizer))
+                    .unwrap_or(false)
         }
     }
 );
@@ -319,7 +319,7 @@ impl IosWindow {
         let window_scene = window_scene.as_deref();
         let (window, screen_bounds_cg, scale) = if let Some(scene) = window_scene {
             let screen = scene.screen();
-            let bounds = screen.bounds();
+            let bounds = scene.effectiveGeometry().coordinateSpace(main_thread).bounds();
             let window = UIWindow::initWithWindowScene(UIWindow::alloc(main_thread), scene);
             window.setFrame(bounds);
             (window, bounds, screen.scale())
@@ -485,6 +485,7 @@ impl IosWindow {
 impl IosWindowState {
     pub(super) fn attach_to_scene(&self, scene: &UIWindowScene) {
         self.window.setWindowScene(Some(scene));
+        self.window.setFrame(scene.effectiveGeometry().coordinateSpace(scene.mtm()).bounds());
         self.window.makeKeyAndVisible();
         self.pen.attach_to_scene(&self.view);
         self.handle_layout_change();
@@ -695,6 +696,19 @@ impl IosWindowState {
         });
     }
 
+    fn present_frame_with_transaction(&self) {
+        self.renderer.lock().set_presents_with_transaction(true);
+        self.request_frame_callback.with(|callback| {
+            let force_render = self.force_next_frame.replace(false);
+            callback(RequestFrameOptions {
+                require_presentation: true,
+                force_render,
+                ..Default::default()
+            });
+        });
+        self.renderer.lock().set_presents_with_transaction(false);
+    }
+
     /// Query the safe area insets from the UIView.
     ///
     /// Returns `(top, bottom, left, right)` in logical points.
@@ -840,6 +854,7 @@ impl IosWindowState {
 
         self.resize_callback
             .with(|callback| callback(new_size, new_scale));
+        self.present_frame_with_transaction();
     }
 }
 
