@@ -199,6 +199,24 @@ define_class!(
                 .with_window(|window| window.handle_scroll(recognizer));
         }
 
+        #[unsafe(method(handleTwoFingerPan:))]
+        fn handle_two_finger_pan(&self, recognizer: &UIPanGestureRecognizer) {
+            self.ivars().with_window(|window| {
+                if let Some(input) = super::multitouch::pan_event(recognizer, &window.view) {
+                    window.input_callback.with(|callback| callback(input));
+                }
+            });
+        }
+
+        #[unsafe(method(handleTwoFingerPinch:))]
+        fn handle_two_finger_pinch(&self, recognizer: &objc2_ui_kit::UIPinchGestureRecognizer) {
+            self.ivars().with_window(|window| {
+                if let Some(input) = super::multitouch::pinch_event(recognizer, &window.view) {
+                    window.input_callback.with(|callback| callback(input));
+                }
+            });
+        }
+
         #[unsafe(method(handleBackGesture:))]
         fn handle_back_gesture(&self, recognizer: &UIScreenEdgePanGestureRecognizer) {
             self.ivars()
@@ -211,6 +229,7 @@ define_class!(
         #[unsafe(method(gestureRecognizerShouldBegin:))]
         fn gesture_recognizer_should_begin(&self, recognizer: &UIGestureRecognizer) -> bool {
             super::pen::owns(recognizer)
+                || super::multitouch::owns(recognizer)
                 || self
                     .ivars()
                     .with_window(|window| window.begin_back_gesture(recognizer))
@@ -409,6 +428,7 @@ impl IosWindow {
         );
         back_recognizer.setDelegate(Some(ProtocolObject::from_ref(&*view)));
         view.addGestureRecognizer(&back_recognizer);
+        super::multitouch::install(&view, main_thread);
         let pen = super::pen::PenInput::new(&view, main_thread);
 
         let view_controller = ViewController::new(main_thread);
