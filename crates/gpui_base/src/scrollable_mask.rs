@@ -501,6 +501,7 @@ impl<H: ScrollbarHandle + Clone> Element for ScrollableMask<H> {
                     background: gpui::transparent_white().into(),
                     corner_radii: Corners::all(px(0.)),
                     border_style: BorderStyle::default(),
+                    corner_smoothing: 0.,
                 });
             }
 

@@ -125,6 +125,18 @@ source (`zed-industries/zed`):
 - On an auto-sized axis, absolute padding is snapped as a pair: the sum of both
   sides is rounded to device pixels and split by the authored ratio. Ported
   from [gpui-ce](https://github.com/gpui-ce/gpui-ce) #217 (Apache-2.0).
+- Rounded corners can be smoothed toward a squircle: `Style::corner_smoothing`,
+  `Styled::rounded_smoothing`, `PaintQuad::corner_smoothing`, and a
+  `corner_smoothing` argument on `Window::paint_drop_shadows`,
+  `paint_inset_shadows`, `paint_image` and `paint_image_wide`. Quads (fill,
+  solid and dashed borders), shadows, polychrome sprites and rounded content
+  masks all use the same Figma-style corner construction, so a smoothed element
+  and the children it clips share one outline. `ContentMask` gained
+  `corner_smoothing` and a padding word, which grows every primitive that
+  carries a mask by two words. Ported from
+  [gpui-ce](https://github.com/gpui-ce/gpui-ce) #235 and #338 (Apache-2.0); the
+  corner geometry derives from figma-squircle (MIT), see
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 These changes are documented in detail, with code, rationale, and open
 questions, in [docs/fork](docs/fork/README.md).
@@ -141,6 +153,8 @@ contributors. This fork contains no GPL-licensed code: every remaining crate is
 licensed under Apache-2.0, and third-party dependencies are permissively
 licensed (MIT/Apache/BSD/MPL-2.0 and similar, plus CDLA-Permissive-2.0 for the
 `webpki-roots` / `webpki-root-certs` root certificate data).
+The corner-smoothing shader code is derived from MIT-licensed figma-squircle;
+see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 "Zed" and "GPUI" are trademarks of Zed Industries, Inc.; this fork is not
 affiliated with or endorsed by Zed Industries.

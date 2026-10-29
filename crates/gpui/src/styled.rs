@@ -496,6 +496,12 @@ pub trait Styled: Sized {
         self
     }
 
+    /// Smooths the rounded corners toward a squircle, from 0 (circular) to 1.
+    fn rounded_smoothing(mut self, corner_smoothing: f32) -> Self {
+        self.style().corner_smoothing = Some(corner_smoothing.clamp(0., 1.));
+        self
+    }
+
     /// Sets the border style of the element.
     fn border_dashed(mut self) -> Self {
         self.style().border_style = Some(BorderStyle::Dashed);

@@ -853,6 +853,7 @@ impl Inline {
             border_color: gpui::transparent_black(),
             border_style: BorderStyle::default(),
             border_widths: gpui::Edges::all(px(0.)),
+            corner_smoothing: 0.,
         });
     }
 

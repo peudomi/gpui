@@ -497,6 +497,7 @@ impl Element for Img {
                             bounds,
                             new_bounds,
                             corner_radii,
+                            style.corner_smoothing,
                             data,
                             layout_state.frame_index,
                             self.style.grayscale,

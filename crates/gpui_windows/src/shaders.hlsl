@@ -45,6 +45,8 @@ struct Corners {
 struct ContentMask {
     Bounds bounds;
     Corners corner_radii;
+    float corner_smoothing;
+    float pad;
 };
 
 struct Edges {
@@ -327,12 +329,517 @@ float quad_sdf(float2 pt, Bounds bounds, Corners corner_radii) {
     return quad_sdf_impl(corner_center_to_point, corner_radius);
 }
 
+// --- corner smoothing --- //
+// Derived from figma-squircle by Tien Pham (MIT), see THIRD_PARTY_NOTICES.md.
+
+struct SmoothCorners {
+    float4 horizontal_reaches;
+    float4 vertical_reaches;
+    float4 factors;
+};
+
+struct SmoothAxis {
+    float a;
+    float b;
+    float p;
+};
+
+struct SmoothCornerParams {
+    float radius;
+    float smoothing;
+    float arc_sweep;
+    float c;
+    float d;
+    SmoothAxis horizontal;
+    SmoothAxis vertical;
+};
+
+struct SmoothCubicPoint {
+    float2 pt;
+    float2 tangent;
+    float distance;
+    float path_t;
+};
+
+struct SmoothSample {
+    float distance;
+    float2 normal;
+    float path_t;
+    uint segment;
+    uint corner;
+};
+
+static const float SMOOTH_EPSILON = 0.000001;
+static const uint SMOOTH_SEGMENT_STRAIGHT = 0;
+static const uint SMOOTH_SEGMENT_FIRST_CUBIC = 1;
+static const uint SMOOTH_SEGMENT_ARC = 2;
+static const uint SMOOTH_SEGMENT_SECOND_CUBIC = 3;
+static const uint SMOOTH_NO_CORNER = 4;
+
+float4 corners_to_float4(Corners corners) {
+    return float4(corners.top_left, corners.top_right, corners.bottom_right,
+                  corners.bottom_left);
+}
+
+float2 smooth_split_side(float side_length, float first_radius, float second_radius) {
+    float total_radius = first_radius + second_radius;
+    if (total_radius == 0.0) {
+        return (float2)0.0;
+    }
+    float first_budget = side_length * first_radius / total_radius;
+    return float2(first_budget, side_length - first_budget);
+}
+
+float4 smooth_factors(float corner_smoothing) {
+    float smoothing = clamp(corner_smoothing, 0.0, 1.0);
+    float arc_sweep = 0.5 * M_PI_F * (1.0 - smoothing);
+    float beta = (M_PI_F / 4.0) * smoothing;
+    float join_handle_factor = tan(0.5 * beta);
+    return float4(smoothing, sin(0.5 * arc_sweep) * sqrt(2.0),
+                  join_handle_factor * cos(beta), join_handle_factor * sin(beta));
+}
+
+SmoothCorners smooth_prepare(float2 size, float4 radii_values, float corner_smoothing) {
+    float radii[4] = {max(radii_values.x, 0.0), max(radii_values.y, 0.0),
+                      max(radii_values.z, 0.0), max(radii_values.w, 0.0)};
+    float budgets[4] = {-1.0, -1.0, -1.0, -1.0};
+    uint order[4] = {0, 1, 3, 2};
+    static const uint horizontal_neighbors[4] = {1, 0, 3, 2};
+    static const uint vertical_neighbors[4] = {3, 2, 1, 0};
+
+    for (uint sweep = 0; sweep < 3; sweep++) {
+        for (uint index = 0; index < 3 - sweep; index++) {
+            if (radii[order[index]] < radii[order[index + 1]]) {
+                uint swap = order[index];
+                order[index] = order[index + 1];
+                order[index + 1] = swap;
+            }
+        }
+    }
+
+    for (uint rank = 0; rank < 4; rank++) {
+        uint corner = order[rank];
+        float radius = radii[corner];
+        uint horizontal_neighbor = horizontal_neighbors[corner];
+        uint vertical_neighbor = vertical_neighbors[corner];
+
+        float horizontal_radius = radii[horizontal_neighbor];
+        float horizontal_budget = 0.0;
+        if (radius != 0.0 || horizontal_radius != 0.0) {
+            if (budgets[horizontal_neighbor] >= 0.0) {
+                horizontal_budget = size.x - budgets[horizontal_neighbor];
+            } else {
+                horizontal_budget = size.x * radius / (radius + horizontal_radius);
+            }
+        }
+
+        float vertical_radius = radii[vertical_neighbor];
+        float vertical_budget = 0.0;
+        if (radius != 0.0 || vertical_radius != 0.0) {
+            if (budgets[vertical_neighbor] >= 0.0) {
+                vertical_budget = size.y - budgets[vertical_neighbor];
+            } else {
+                vertical_budget = size.y * radius / (radius + vertical_radius);
+            }
+        }
+
+        float budget = max(0.0, min(horizontal_budget, vertical_budget));
+        budgets[corner] = budget;
+        radii[corner] = min(radius, budget);
+    }
+
+    float2 top = smooth_split_side(size.x, radii[0], radii[1]);
+    float2 bottom = smooth_split_side(size.x, radii[3], radii[2]);
+    float2 left = smooth_split_side(size.y, radii[0], radii[3]);
+    float2 right = smooth_split_side(size.y, radii[1], radii[2]);
+    float4 horizontal_budgets = max(float4(top.x, top.y, bottom.y, bottom.x), (float4)0.0);
+    float4 vertical_budgets = max(float4(left.x, right.x, right.y, left.y), (float4)0.0);
+    float4 clamped_radii =
+        min(max(radii_values, (float4)0.0), min(horizontal_budgets, vertical_budgets));
+    float4 reaches = clamped_radii * (1.0 + clamp(corner_smoothing, 0.0, 1.0));
+
+    SmoothCorners prepared = (SmoothCorners)0;
+    prepared.horizontal_reaches = min(reaches, horizontal_budgets);
+    prepared.vertical_reaches = min(reaches, vertical_budgets);
+    prepared.factors = smooth_factors(corner_smoothing);
+    return prepared;
+}
+
+SmoothCornerParams smooth_corner_params(float corner_radius, float horizontal_reach,
+                                        float vertical_reach, float4 factors) {
+    float safe_horizontal_reach = max(horizontal_reach, 0.0);
+    float safe_vertical_reach = max(vertical_reach, 0.0);
+    float radius =
+        min(max(corner_radius, 0.0), min(safe_horizontal_reach, safe_vertical_reach));
+    float smoothing = radius > SMOOTH_EPSILON ? factors.x : 0.0;
+    float desired_reach = radius * (1.0 + smoothing);
+    float arc_delta = factors.y * radius;
+    float c = factors.z * radius;
+    float d = factors.w * radius;
+    float core_length = arc_delta + c + d;
+    float ideal_b = max((desired_reach - core_length) / 3.0, 0.0);
+    float horizontal_available = max(safe_horizontal_reach - core_length, 0.0);
+    float vertical_available = max(safe_vertical_reach - core_length, 0.0);
+    float shared_b = min(ideal_b, min(horizontal_available * (5.0 / 6.0),
+                                      vertical_available * (5.0 / 6.0)));
+
+    SmoothCornerParams params = (SmoothCornerParams)0;
+    params.radius = radius;
+    params.smoothing = smoothing;
+    params.arc_sweep = 0.5 * M_PI_F * (1.0 - smoothing);
+    params.c = c;
+    params.d = d;
+    params.horizontal.a = horizontal_available - shared_b;
+    params.horizontal.b = shared_b;
+    params.horizontal.p = safe_horizontal_reach;
+    params.vertical.a = vertical_available - shared_b;
+    params.vertical.b = shared_b;
+    params.vertical.p = safe_vertical_reach;
+    return params;
+}
+
+float2 smooth_cubic_point(SmoothAxis axis, float c, float d, float t) {
+    float x1 = 3.0 * axis.a;
+    float x2 = 3.0 * (axis.b - axis.a);
+    float x3 = axis.a - 2.0 * axis.b + c;
+    return float2(t * (x1 + t * (x2 + t * x3)), d * t * t * t);
+}
+
+float2 smooth_cubic_derivative(SmoothAxis axis, float c, float d, float t) {
+    float x1 = 3.0 * axis.a;
+    float x2 = 3.0 * (axis.b - axis.a);
+    float x3 = axis.a - 2.0 * axis.b + c;
+    return float2(x1 + 2.0 * x2 * t + 3.0 * x3 * t * t, 3.0 * d * t * t);
+}
+
+float2 smooth_cubic_second_derivative(SmoothAxis axis, float c, float d, float t) {
+    float x2 = 3.0 * (axis.b - axis.a);
+    float x3 = axis.a - 2.0 * axis.b + c;
+    return float2(2.0 * x2 + 6.0 * x3 * t, 6.0 * d * t);
+}
+
+SmoothCubicPoint smooth_closest_cubic(float2 pt, SmoothAxis axis, float c, float d) {
+    float y_seed = pow(clamp(pt.y / max(d, 0.00001), 0.0, 1.0), 1.0 / 3.0);
+    float2 chord = smooth_cubic_point(axis, c, d, 1.0);
+    float chord_seed =
+        clamp(dot(pt, chord) / max(dot(chord, chord), SMOOTH_EPSILON), 0.0, 1.0);
+    float2 y_delta = smooth_cubic_point(axis, c, d, y_seed) - pt;
+    float2 chord_delta = smooth_cubic_point(axis, c, d, chord_seed) - pt;
+    float t = dot(chord_delta, chord_delta) < dot(y_delta, y_delta) ? chord_seed : y_seed;
+
+    for (uint iteration = 0; iteration < 4; iteration++) {
+        float2 curve_point = smooth_cubic_point(axis, c, d, t);
+        float2 tangent = smooth_cubic_derivative(axis, c, d, t);
+        float2 second_derivative = smooth_cubic_second_derivative(axis, c, d, t);
+        float2 delta = curve_point - pt;
+        float denominator = dot(tangent, tangent) + dot(delta, second_derivative);
+        if (abs(denominator) > SMOOTH_EPSILON) {
+            t = clamp(t - dot(delta, tangent) / denominator, 0.0, 1.0);
+        }
+    }
+
+    SmoothCubicPoint closest = (SmoothCubicPoint)0;
+    closest.path_t = t;
+    closest.pt = smooth_cubic_point(axis, c, d, t);
+    closest.distance = length(pt - closest.pt);
+
+    float start_distance = length(pt);
+    if (start_distance < closest.distance) {
+        closest.path_t = 0.0;
+        closest.pt = (float2)0.0;
+        closest.distance = start_distance;
+    }
+
+    float end_distance = length(pt - chord);
+    if (end_distance < closest.distance) {
+        closest.path_t = 1.0;
+        closest.pt = chord;
+        closest.distance = end_distance;
+    }
+
+    closest.tangent = smooth_cubic_derivative(axis, c, d, closest.path_t);
+    return closest;
+}
+
+float smooth_signed_distance(float2 delta, float2 normal, float distance) {
+    return dot(delta, normal) >= 0.0 ? distance : -distance;
+}
+
+float2 smooth_unfold_normal(float2 normal, bool mirrored) {
+    return mirrored ? float2(-normal.y, normal.x) : float2(normal.x, -normal.y);
+}
+
+SmoothSample smooth_corner_sample(float2 corner_to_point, SmoothCornerParams params) {
+    SmoothSample sample = (SmoothSample)0;
+    sample.corner = SMOOTH_NO_CORNER;
+    float2 z = corner_to_point + float2(params.horizontal.p, params.vertical.p);
+
+    if (params.radius <= SMOOTH_EPSILON || z.x <= 0.0 || z.y <= 0.0) {
+        sample.distance = max(corner_to_point.x, corner_to_point.y);
+        sample.normal =
+            corner_to_point.x > corner_to_point.y ? float2(1.0, 0.0) : float2(0.0, 1.0);
+        sample.path_t = 0.0;
+        sample.segment = SMOOTH_SEGMENT_STRAIGHT;
+        return sample;
+    }
+
+    float2 horizontal_point = float2(z.x, params.vertical.p - z.y);
+    float2 vertical_point = float2(z.y, params.horizontal.p - z.x);
+    float2 circle_center = float2(params.horizontal.p - params.radius, params.radius);
+    float2 join = float2(params.horizontal.a + params.horizontal.b + params.c, params.d);
+    float2 start_direction = (join - circle_center) / params.radius;
+    float2 to_point = horizontal_point - circle_center;
+    float to_point_length = length(to_point);
+    float2 point_direction = to_point_length > SMOOTH_EPSILON
+                                 ? to_point / max(to_point_length, SMOOTH_EPSILON)
+                                 : start_direction;
+
+    float cross_z =
+        start_direction.x * point_direction.y - start_direction.y * point_direction.x;
+    float arc_angle =
+        clamp(atan2(cross_z, dot(start_direction, point_direction)), 0.0, params.arc_sweep);
+    float arc_sine = sin(arc_angle);
+    float arc_cosine = cos(arc_angle);
+    float2 arc_normal =
+        float2(arc_cosine * start_direction.x - arc_sine * start_direction.y,
+               arc_sine * start_direction.x + arc_cosine * start_direction.y);
+    float2 arc_delta = horizontal_point - (circle_center + params.radius * arc_normal);
+
+    sample.distance = smooth_signed_distance(arc_delta, arc_normal, length(arc_delta));
+    sample.normal = smooth_unfold_normal(arc_normal, false);
+    sample.path_t = params.arc_sweep > SMOOTH_EPSILON
+                        ? arc_angle / max(params.arc_sweep, SMOOTH_EPSILON)
+                        : 0.0;
+    sample.segment = SMOOTH_SEGMENT_ARC;
+
+    if (params.smoothing > SMOOTH_EPSILON) {
+        float2 horizontal_bounds_delta =
+            max((float2)0.0, max(-horizontal_point, horizontal_point - join));
+        if (dot(horizontal_bounds_delta, horizontal_bounds_delta) <=
+            sample.distance * sample.distance * 1.000001 + SMOOTH_EPSILON) {
+            SmoothCubicPoint cubic =
+                smooth_closest_cubic(horizontal_point, params.horizontal, params.c, params.d);
+            float2 normal = normalize(float2(cubic.tangent.y, -cubic.tangent.x));
+            float distance =
+                smooth_signed_distance(horizontal_point - cubic.pt, normal, cubic.distance);
+            if (abs(distance) <= abs(sample.distance)) {
+                sample.distance = distance;
+                sample.normal = smooth_unfold_normal(normal, false);
+                sample.path_t = cubic.path_t;
+                sample.segment = SMOOTH_SEGMENT_FIRST_CUBIC;
+            }
+        }
+
+        float2 vertical_join =
+            float2(params.vertical.a + params.vertical.b + params.c, params.d);
+        float2 vertical_bounds_delta =
+            max((float2)0.0, max(-vertical_point, vertical_point - vertical_join));
+        if (dot(vertical_bounds_delta, vertical_bounds_delta) <=
+            sample.distance * sample.distance * 1.000001 + SMOOTH_EPSILON) {
+            SmoothCubicPoint cubic =
+                smooth_closest_cubic(vertical_point, params.vertical, params.c, params.d);
+            float2 normal = normalize(float2(cubic.tangent.y, -cubic.tangent.x));
+            float distance =
+                smooth_signed_distance(vertical_point - cubic.pt, normal, cubic.distance);
+            if (abs(distance) <= abs(sample.distance)) {
+                sample.distance = distance;
+                sample.normal = smooth_unfold_normal(normal, true);
+                sample.path_t = cubic.path_t;
+                sample.segment = SMOOTH_SEGMENT_SECOND_CUBIC;
+            }
+        }
+    }
+
+    return sample;
+}
+
+float smooth_cubic_length(SmoothCornerParams params, SmoothAxis axis, float end_t) {
+    float half_t = clamp(end_t, 0.0, 1.0) / 2.0;
+    if (half_t <= 0.0 || params.smoothing <= 0.0) {
+        return 0.0;
+    }
+    float offset1 = half_t * 0.5384693101;
+    float offset2 = half_t * 0.9061798459;
+    float speed0 = length(smooth_cubic_derivative(axis, params.c, params.d, half_t));
+    float speed1 =
+        length(smooth_cubic_derivative(axis, params.c, params.d, half_t - offset1)) +
+        length(smooth_cubic_derivative(axis, params.c, params.d, half_t + offset1));
+    float speed2 =
+        length(smooth_cubic_derivative(axis, params.c, params.d, half_t - offset2)) +
+        length(smooth_cubic_derivative(axis, params.c, params.d, half_t + offset2));
+    return half_t * (0.5688888889 * speed0 + 0.4786286705 * speed1 + 0.2369268851 * speed2);
+}
+
+float smooth_corner_length(SmoothCornerParams params) {
+    return smooth_cubic_length(params, params.horizontal, 1.0) +
+           params.radius * params.arc_sweep +
+           smooth_cubic_length(params, params.vertical, 1.0);
+}
+
+float smooth_corner_progress(SmoothCornerParams params, SmoothSample sample,
+                             float total_length) {
+    if (sample.segment == SMOOTH_SEGMENT_FIRST_CUBIC) {
+        return smooth_cubic_length(params, params.horizontal, sample.path_t);
+    }
+    if (sample.segment == SMOOTH_SEGMENT_ARC) {
+        return smooth_cubic_length(params, params.horizontal, 1.0) +
+               params.radius * params.arc_sweep * sample.path_t;
+    }
+    if (sample.segment == SMOOTH_SEGMENT_SECOND_CUBIC) {
+        return total_length - smooth_cubic_length(params, params.vertical, sample.path_t);
+    }
+    return 0.0;
+}
+
+bool smooth_is_corner_candidate(float2 pt, float2 size, float horizontal_extent,
+                                float vertical_extent, uint corner) {
+    if (horizontal_extent <= SMOOTH_EPSILON || vertical_extent <= SMOOTH_EPSILON) {
+        return false;
+    }
+    if (corner == 0) {
+        return pt.x <= horizontal_extent && pt.y <= vertical_extent;
+    }
+    if (corner == 1) {
+        return size.x - pt.x <= horizontal_extent && pt.y <= vertical_extent;
+    }
+    if (corner == 2) {
+        return size.x - pt.x <= horizontal_extent && size.y - pt.y <= vertical_extent;
+    }
+    return pt.x <= horizontal_extent && size.y - pt.y <= vertical_extent;
+}
+
+bool smooth_has_corner_candidate(float2 pt, float2 size, SmoothCorners prepared) {
+    for (uint corner = 0; corner < 4; corner++) {
+        if (smooth_is_corner_candidate(pt, size, prepared.horizontal_reaches[corner],
+                                       prepared.vertical_reaches[corner], corner)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+float2 smooth_corner_to_point(float2 pt, float2 size, uint corner) {
+    if (corner == 0) {
+        return -pt;
+    }
+    if (corner == 1) {
+        return float2(pt.x - size.x, -pt.y);
+    }
+    if (corner == 2) {
+        return pt - size;
+    }
+    return float2(-pt.x, pt.y - size.y);
+}
+
+float2 smooth_orient_normal(float2 normal, uint corner) {
+    if (corner == 0) {
+        return -normal;
+    }
+    if (corner == 1) {
+        return float2(normal.x, -normal.y);
+    }
+    if (corner == 2) {
+        return normal;
+    }
+    return float2(-normal.x, normal.y);
+}
+
+SmoothSample smooth_straight_sample(float2 pt, float2 size, SmoothCorners prepared) {
+    float4 h = prepared.horizontal_reaches;
+    float4 v = prepared.vertical_reaches;
+
+    float2 nearest_delta = pt - float2(clamp(pt.x, h.x, max(h.x, size.x - h.y)), 0.0);
+    float2 nearest_normal = float2(0.0, -1.0);
+    float nearest_distance_squared = dot(nearest_delta, nearest_delta);
+
+    float2 candidate_delta =
+        pt - float2(size.x, clamp(pt.y, v.y, max(v.y, size.y - v.z)));
+    float candidate_distance_squared = dot(candidate_delta, candidate_delta);
+    if (candidate_distance_squared < nearest_distance_squared) {
+        nearest_delta = candidate_delta;
+        nearest_normal = float2(1.0, 0.0);
+        nearest_distance_squared = candidate_distance_squared;
+    }
+
+    candidate_delta = pt - float2(clamp(pt.x, h.w, max(h.w, size.x - h.z)), size.y);
+    candidate_distance_squared = dot(candidate_delta, candidate_delta);
+    if (candidate_distance_squared < nearest_distance_squared) {
+        nearest_delta = candidate_delta;
+        nearest_normal = float2(0.0, 1.0);
+        nearest_distance_squared = candidate_distance_squared;
+    }
+
+    candidate_delta = pt - float2(0.0, clamp(pt.y, v.x, max(v.x, size.y - v.w)));
+    candidate_distance_squared = dot(candidate_delta, candidate_delta);
+    if (candidate_distance_squared < nearest_distance_squared) {
+        nearest_delta = candidate_delta;
+        nearest_normal = float2(-1.0, 0.0);
+        nearest_distance_squared = candidate_distance_squared;
+    }
+
+    SmoothSample sample = (SmoothSample)0;
+    sample.distance = smooth_signed_distance(nearest_delta, nearest_normal,
+                                             sqrt(nearest_distance_squared));
+    sample.normal = nearest_normal;
+    sample.path_t = 0.0;
+    sample.segment = SMOOTH_SEGMENT_STRAIGHT;
+    sample.corner = SMOOTH_NO_CORNER;
+    return sample;
+}
+
+// `pt` is relative to the rectangle's origin.
+SmoothSample smooth_rect_sample(float2 pt, float2 size, float4 radii,
+                                SmoothCorners prepared) {
+    SmoothSample result = smooth_straight_sample(pt, size, prepared);
+    if (!smooth_has_corner_candidate(pt, size, prepared)) {
+        return result;
+    }
+
+    for (uint corner = 0; corner < 4; corner++) {
+        if (smooth_is_corner_candidate(pt, size, prepared.horizontal_reaches[corner],
+                                       prepared.vertical_reaches[corner], corner)) {
+            SmoothCornerParams params = smooth_corner_params(
+                radii[corner], prepared.horizontal_reaches[corner],
+                prepared.vertical_reaches[corner], prepared.factors);
+            if (params.radius > SMOOTH_EPSILON) {
+                SmoothSample candidate =
+                    smooth_corner_sample(smooth_corner_to_point(pt, size, corner), params);
+                candidate.normal = smooth_orient_normal(candidate.normal, corner);
+                candidate.corner = corner;
+                if (abs(candidate.distance) <= abs(result.distance)) {
+                    result = candidate;
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+float smooth_rect_sdf(float2 pt, Bounds bounds,
+                      Corners corner_radii, float corner_smoothing) {
+    float4 radii = corners_to_float4(corner_radii);
+    float2 origin = bounds.origin;
+    float2 size = bounds.size;
+    SmoothCorners prepared = smooth_prepare(size, radii, corner_smoothing);
+    return smooth_rect_sample(pt - origin, size, radii, prepared).distance;
+}
+
+float rounded_rect_sdf(float2 pt, Bounds bounds,
+                       Corners corner_radii, float corner_smoothing) {
+    if (corner_smoothing <= 0.0) {
+        return quad_sdf(pt, bounds, corner_radii);
+    }
+    return smooth_rect_sdf(pt, bounds, corner_radii, corner_smoothing);
+}
+
 float content_mask_alpha(float2 pt, ContentMask mask) {
     if (mask.corner_radii.top_left == 0.0 && mask.corner_radii.top_right == 0.0 &&
         mask.corner_radii.bottom_right == 0.0 && mask.corner_radii.bottom_left == 0.0) {
         return 1.0;
     }
-    return saturate(0.5 - quad_sdf(pt, mask.bounds, mask.corner_radii));
+    return saturate(0.5 - rounded_rect_sdf(pt, mask.bounds, mask.corner_radii,
+                                           mask.corner_smoothing));
 }
 
 GradientColor prepare_gradient_color(uint tag, uint color_space, Hsla solid, LinearColorStop colors[2]) {
@@ -528,6 +1035,8 @@ struct Quad {
     Hsla border_color;
     Corners corner_radii;
     Edges border_widths;
+    float corner_smoothing;
+    uint pad;
 };
 
 struct QuadVertexOutput {
@@ -577,6 +1086,172 @@ QuadVertexOutput quad_vertex(uint vertex_id: SV_VertexID, uint instance_id: SV_I
     return output;
 }
 
+float smooth_dash_alpha(Quad quad, SmoothSample sample, SmoothCorners prepared,
+                        float2 pt, float2 center_to_point, float2 border,
+                        float2 straight_border_inner_corner_to_point) {
+    const float antialias_threshold = 0.5;
+    const float dash_length_per_width = 2.0;
+    const float dash_gap_per_width = 1.0;
+    const float dash_period_per_width = dash_length_per_width + dash_gap_per_width;
+    const float dv_numerator = 1.0 / dash_period_per_width;
+    float2 size = quad.bounds.size;
+    float4 h = prepared.horizontal_reaches;
+    float4 v = prepared.vertical_reaches;
+
+    float w_t = quad.border_widths.top;
+    float w_r = quad.border_widths.right;
+    float w_b = quad.border_widths.bottom;
+    float w_l = quad.border_widths.left;
+    float dv_t = w_t <= 0.0 ? 0.0 : dv_numerator / w_t;
+    float dv_r = w_r <= 0.0 ? 0.0 : dv_numerator / w_r;
+    float dv_b = w_b <= 0.0 ? 0.0 : dv_numerator / w_b;
+    float dv_l = w_l <= 0.0 ? 0.0 : dv_numerator / w_l;
+
+    float s_t = (size.x - h.x - h.y) * dv_t;
+    float s_r = (size.y - v.y - v.z) * dv_r;
+    float s_b = (size.x - h.z - h.w) * dv_b;
+    float s_l = (size.y - v.w - v.x) * dv_l;
+
+    float4 corner_velocities = float4(
+        corner_dash_velocity(dv_t, dv_l), corner_dash_velocity(dv_t, dv_r),
+        corner_dash_velocity(dv_b, dv_r), corner_dash_velocity(dv_b, dv_l));
+    float4 radii = corners_to_float4(quad.corner_radii);
+    float4 corner_lengths = float4(
+        smooth_corner_length(smooth_corner_params(radii.x, h.x, v.x, prepared.factors)),
+        smooth_corner_length(smooth_corner_params(radii.y, h.y, v.y, prepared.factors)),
+        smooth_corner_length(smooth_corner_params(radii.z, h.z, v.z, prepared.factors)),
+        smooth_corner_length(smooth_corner_params(radii.w, h.w, v.w, prepared.factors)));
+    float4 c = corner_lengths * corner_velocities;
+
+    float upto_tr = s_t;
+    float upto_r = upto_tr + c.y;
+    float upto_br = upto_r + s_r;
+    float upto_b = upto_br + c.z;
+    float upto_bl = upto_b + s_b;
+    float upto_l = upto_bl + c.w;
+    float upto_tl = upto_l + s_l;
+    float max_t = upto_tl + c.x;
+
+    float t = 0.0;
+    float dash_velocity = 0.0;
+    if (sample.corner != SMOOTH_NO_CORNER && sample.segment != SMOOTH_SEGMENT_STRAIGHT) {
+        uint corner = sample.corner;
+        float corner_length = corner_lengths[corner];
+        SmoothCornerParams params =
+            smooth_corner_params(radii[corner], h[corner], v[corner], prepared.factors);
+        float progress = smooth_corner_progress(params, sample, corner_length);
+        dash_velocity = corner_velocities[corner];
+        if (corner == 0) {
+            t = upto_tl + (corner_length - progress) * dash_velocity;
+        } else if (corner == 1) {
+            t = upto_tr + progress * dash_velocity;
+        } else if (corner == 2) {
+            t = upto_br + (corner_length - progress) * dash_velocity;
+        } else {
+            t = upto_bl + progress * dash_velocity;
+        }
+    } else {
+        bool is_horizontal =
+            straight_border_inner_corner_to_point.x < straight_border_inner_corner_to_point.y;
+        if ((is_horizontal ? border.y : border.x) <= 0.0) {
+            is_horizontal = !is_horizontal;
+        }
+        if (is_horizontal) {
+            if (center_to_point.y < 0.0) {
+                dash_velocity = dv_t;
+                t = (pt.x - h.x) * dash_velocity;
+            } else {
+                dash_velocity = dv_b;
+                t = upto_bl - (pt.x - h.w) * dash_velocity;
+            }
+        } else {
+            if (center_to_point.x < 0.0) {
+                dash_velocity = dv_l;
+                t = upto_tl - (pt.y - v.x) * dash_velocity;
+            } else {
+                dash_velocity = dv_r;
+                t = upto_r + (pt.y - v.y) * dash_velocity;
+            }
+        }
+    }
+
+    if (max_t < 1.0) {
+        return 1.0;
+    }
+    float dash_count = floor(max_t);
+    float dash_period = max_t / dash_count;
+    float dash_length = dash_length_per_width / dash_period_per_width;
+    return dash_alpha(t, dash_period, dash_length, dash_velocity, antialias_threshold);
+}
+
+float4 smooth_quad_color(Quad quad, float2 position, float4 background_color,
+                         float4 input_border_color, float mask_alpha) {
+    const float antialias_threshold = 0.5;
+    float4 radii = corners_to_float4(quad.corner_radii);
+    float2 size = quad.bounds.size;
+    float2 pt = position - quad.bounds.origin;
+    SmoothCorners prepared = smooth_prepare(size, radii, quad.corner_smoothing);
+    SmoothSample sample = smooth_rect_sample(pt, size, radii, prepared);
+    float outer_sdf = sample.distance;
+
+    if (quad.border_widths.top == 0.0 && quad.border_widths.right == 0.0 &&
+        quad.border_widths.bottom == 0.0 && quad.border_widths.left == 0.0) {
+        return background_color *
+               float4(1.0, 1.0, 1.0, saturate(antialias_threshold - outer_sdf) * mask_alpha);
+    }
+
+    float2 half_size = size / 2.0;
+    float2 center_to_point = pt - half_size;
+    float2 border = float2(
+        center_to_point.x < 0.0 ? quad.border_widths.left : quad.border_widths.right,
+        center_to_point.y < 0.0 ? quad.border_widths.top : quad.border_widths.bottom);
+    if (sample.corner == 0) {
+        border = float2(quad.border_widths.left, quad.border_widths.top);
+    } else if (sample.corner == 1) {
+        border = float2(quad.border_widths.right, quad.border_widths.top);
+    } else if (sample.corner == 2) {
+        border = float2(quad.border_widths.right, quad.border_widths.bottom);
+    } else if (sample.corner == 3) {
+        border = float2(quad.border_widths.left, quad.border_widths.bottom);
+    }
+
+    float2 reduced_border = float2(border.x == 0.0 ? -antialias_threshold : border.x,
+                                   border.y == 0.0 ? -antialias_threshold : border.y);
+    float2 straight_border_inner_corner_to_point =
+        abs(center_to_point) - half_size + reduced_border;
+    bool near_curve = sample.segment != SMOOTH_SEGMENT_STRAIGHT;
+
+    if (straight_border_inner_corner_to_point.x < -antialias_threshold &&
+        straight_border_inner_corner_to_point.y < -antialias_threshold && !near_curve) {
+        return background_color * float4(1.0, 1.0, 1.0, mask_alpha);
+    }
+
+    float inner_sdf;
+    if (near_curve) {
+        float2 normal = abs(sample.normal);
+        float2 active_sides = float2(border.x > 0.0 ? 1.0 : 0.0, border.y > 0.0 ? 1.0 : 0.0);
+        float effective_width = length(border * normal) -
+                                antialias_threshold * (1.0 - length(active_sides * normal));
+        inner_sdf = -(outer_sdf + effective_width);
+    } else {
+        inner_sdf = -max(straight_border_inner_corner_to_point.x,
+                         straight_border_inner_corner_to_point.y);
+    }
+
+    float4 color = background_color;
+    if (max(inner_sdf, outer_sdf) < antialias_threshold) {
+        float4 border_color = input_border_color;
+        if (quad.border_style == 1) {
+            border_color.a *= smooth_dash_alpha(quad, sample, prepared, pt, center_to_point,
+                                                border, straight_border_inner_corner_to_point);
+        }
+        float4 blended_border = over(background_color, border_color);
+        color = lerp(background_color, blended_border, saturate(antialias_threshold - inner_sdf));
+    }
+
+    return color * float4(1.0, 1.0, 1.0, saturate(antialias_threshold - outer_sdf) * mask_alpha);
+}
+
 float4 quad_fragment(QuadFragmentInput input): SV_Target {
     Quad quad = quads[input.quad_id];
     float mask_alpha = content_mask_alpha(input.position.xy, quad.content_mask);
@@ -587,6 +1262,11 @@ float4 quad_fragment(QuadFragmentInput input): SV_Target {
         quad.corner_radii.top_right == 0.0 &&
         quad.corner_radii.bottom_left == 0.0 &&
         quad.corner_radii.bottom_right == 0.0;
+
+    if (quad.corner_smoothing > 0.0 && !unrounded) {
+        return smooth_quad_color(quad, input.position.xy, background_color, input.border_color,
+                                 mask_alpha);
+    }
 
     // Fast path when the quad is not rounded and doesn't have any border
     if (quad.border_widths.top == 0.0 &&
@@ -886,7 +1566,7 @@ struct Shadow {
     Bounds element_bounds;
     Corners element_corner_radii;
     uint inset;
-    uint pad; // align to 8 bytes
+    float corner_smoothing;
 };
 
 struct ShadowVertexOutput {
@@ -933,8 +1613,49 @@ ShadowVertexOutput shadow_vertex(uint vertex_id: SV_VertexID, uint instance_id: 
     return output;
 }
 
+float smooth_shadow_alpha(Shadow shadow, float2 position) {
+    float alpha = 0.0;
+    if (shadow.blur_radius == 0.0) {
+        alpha = saturate(0.5 - smooth_rect_sdf(position, shadow.bounds, shadow.corner_radii,
+                                               shadow.corner_smoothing));
+    } else {
+        float blur_limit = 3.0 * shadow.blur_radius;
+        float2 origin = shadow.bounds.origin;
+        float2 size = shadow.bounds.size;
+        float2 half_size = size / 2.0;
+        float2 center_to_point = position - (origin + half_size);
+        float2 outside_delta = max(abs(center_to_point) - half_size, (float2)0.0);
+        if (dot(outside_delta, outside_delta) <= blur_limit * blur_limit) {
+            float4 radii = corners_to_float4(shadow.corner_radii);
+            SmoothCorners prepared = smooth_prepare(size, radii, shadow.corner_smoothing);
+            float2 pt = position - origin;
+            float edge_depth = min(min(pt.x, size.x - pt.x), min(pt.y, size.y - pt.y));
+            if (!smooth_has_corner_candidate(pt, size, prepared) && edge_depth >= blur_limit) {
+                alpha = 1.0;
+            } else {
+                float distance = smooth_rect_sample(pt, size, radii, prepared).distance;
+                float normalized = distance / (sqrt(2.0) * shadow.blur_radius);
+                alpha = saturate(0.5 - 0.5 * erf(float2(normalized, normalized)).x);
+            }
+        }
+    }
+
+    if (shadow.inset != 0u) {
+        alpha = (1.0 - alpha) *
+                saturate(0.5 - rounded_rect_sdf(position, shadow.element_bounds,
+                                                shadow.element_corner_radii,
+                                                shadow.corner_smoothing));
+    }
+    return alpha;
+}
+
 float4 shadow_fragment(ShadowFragmentInput input): SV_TARGET {
     Shadow shadow = shadows[input.shadow_id];
+    if (shadow.corner_smoothing > 0.0) {
+        return input.color * float4(1., 1., 1.,
+            smooth_shadow_alpha(shadow, input.position.xy) *
+            content_mask_alpha(input.position.xy, shadow.content_mask));
+    }
 
     float2 half_size = shadow.bounds.size / 2.;
     float2 center = shadow.bounds.origin + half_size;
@@ -1244,7 +1965,7 @@ SubpixelSpriteFragmentOutput subpixel_sprite_fragment(MonochromeSpriteFragmentIn
 
 struct PolychromeSprite {
     uint order;
-    uint pad;
+    float corner_smoothing;
     AtlasTile tile;
     uint grayscale;
     float opacity;
@@ -1288,7 +2009,8 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
 float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
     PolychromeSprite sprite = poly_sprites[input.sprite_id];
     float4 sample = t_sprite.Sample(s_sprite, input.tile_position);
-    float distance = quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
+    float distance = rounded_rect_sdf(input.position.xy, sprite.bounds, sprite.corner_radii,
+                                      sprite.corner_smoothing);
 
     float4 color = sample;
     if (sprite.grayscale != 0u) {

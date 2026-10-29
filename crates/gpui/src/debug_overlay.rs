@@ -114,7 +114,7 @@ impl DebugFrameOverlay {
                 origin: point(ScaledPixels(0.), ScaledPixels(0.)),
                 size: viewport,
             },
-            corner_radii: Corners::default(),
+            ..Default::default()
         };
 
         scene.insert_primitive(solid_quad(
@@ -226,6 +226,8 @@ fn solid_quad(
         border_color: transparent_black(),
         corner_radii: Corners::default(),
         border_widths: Edges::default(),
+        corner_smoothing: 0.,
+        pad: 0,
     }
 }
 

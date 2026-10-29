@@ -2321,14 +2321,20 @@ pub struct DispatchEventResult {
 /// Indicates which region of the window is visible. Content falling outside of this mask will not be
 /// rendered. Currently, only rectangular content masks are supported, but we give the mask its own type
 /// to leave room to support more complex shapes in the future.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 #[repr(C)]
 pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
     /// The bounds
     pub bounds: Bounds<P>,
     /// The radii by which the corners of `bounds` are rounded.
     pub corner_radii: Corners<P>,
+    /// How far the rounded corners are smoothed toward a squircle, from 0 to 1.
+    pub corner_smoothing: f32,
+    /// Keeps the shader-side layout 8-byte aligned. Always zero.
+    pub pad: f32,
 }
+
+impl<P: Clone + Debug + Default + PartialEq + Eq> Eq for ContentMask<P> {}
 
 impl ContentMask<Pixels> {
     /// Scale the content mask's pixel units by the given scaling factor.
@@ -2336,6 +2342,8 @@ impl ContentMask<Pixels> {
         ContentMask {
             bounds: self.bounds.scale(factor),
             corner_radii: self.corner_radii.scale(factor),
+            corner_smoothing: self.corner_smoothing,
+            pad: 0.,
         }
     }
 
@@ -2365,16 +2373,51 @@ impl ContentMask<Pixels> {
             };
             mine.max(theirs)
         };
+        let corner_radii = Corners {
+            top_left: radius(|bounds| bounds.origin, |radii| radii.top_left),
+            top_right: radius(Bounds::top_right, |radii| radii.top_right),
+            bottom_right: radius(Bounds::bottom_right, |radii| radii.bottom_right),
+            bottom_left: radius(Bounds::bottom_left, |radii| radii.bottom_left),
+        }
+        .clamp_radii_for_quad_size(bounds.size);
+        let contributes = |mask: &Self| {
+            [
+                (
+                    bounds.origin,
+                    mask.bounds.origin,
+                    mask.corner_radii.top_left,
+                ),
+                (
+                    bounds.top_right(),
+                    mask.bounds.top_right(),
+                    mask.corner_radii.top_right,
+                ),
+                (
+                    bounds.bottom_right(),
+                    mask.bounds.bottom_right(),
+                    mask.corner_radii.bottom_right,
+                ),
+                (
+                    bounds.bottom_left(),
+                    mask.bounds.bottom_left(),
+                    mask.corner_radii.bottom_left,
+                ),
+            ]
+            .into_iter()
+            .any(|(kept, own, radius)| radius > px(0.) && (own - kept).magnitude() < 0.05)
+        };
+        let corner_smoothing = match (contributes(self), contributes(other)) {
+            (true, true) => self.corner_smoothing.max(other.corner_smoothing),
+            (true, false) => self.corner_smoothing,
+            (false, true) => other.corner_smoothing,
+            (false, false) => 0.,
+        };
 
         ContentMask {
             bounds,
-            corner_radii: Corners {
-                top_left: radius(|bounds| bounds.origin, |radii| radii.top_left),
-                top_right: radius(Bounds::top_right, |radii| radii.top_right),
-                bottom_right: radius(Bounds::bottom_right, |radii| radii.bottom_right),
-                bottom_left: radius(Bounds::bottom_left, |radii| radii.bottom_left),
-            }
-            .clamp_radii_for_quad_size(bounds.size),
+            corner_radii,
+            corner_smoothing,
+            pad: 0.,
         }
     }
 }
@@ -3445,6 +3488,8 @@ impl Window {
         ContentMask {
             bounds: self.cover_bounds(mask.bounds),
             corner_radii: mask.corner_radii.scale(self.scale_factor()),
+            corner_smoothing: mask.corner_smoothing,
+            pad: 0.,
         }
     }
 
@@ -4443,7 +4488,7 @@ impl Window {
                     origin: Point::default(),
                     size: self.viewport_size,
                 },
-                corner_radii: Corners::default(),
+                ..Default::default()
             })
     }
 
@@ -4685,6 +4730,7 @@ impl Window {
         &mut self,
         bounds: Bounds<Pixels>,
         corner_radii: Corners<Pixels>,
+        corner_smoothing: f32,
         shadows: &[BoxShadow],
     ) {
         self.invalidator.debug_assert_paint();
@@ -4709,7 +4755,7 @@ impl Window {
                 element_bounds,
                 element_corner_radii,
                 inset: 0,
-                pad: 0,
+                corner_smoothing,
             });
         }
     }
@@ -4721,6 +4767,7 @@ impl Window {
         &mut self,
         bounds: Bounds<Pixels>,
         corner_radii: Corners<Pixels>,
+        corner_smoothing: f32,
         shadows: &[BoxShadow],
     ) {
         self.invalidator.debug_assert_paint();
@@ -4754,13 +4801,15 @@ impl Window {
                 element_bounds,
                 element_corner_radii,
                 inset: 1,
-                pad: 0,
+                corner_smoothing,
             });
         }
     }
 
     fn largest_border_interior(quad: &Quad) -> Bounds<ScaledPixels> {
-        let radii = &quad.corner_radii;
+        let radii = &quad
+            .corner_radii
+            .map(|radius| ScaledPixels(radius.0 * (1. + quad.corner_smoothing)));
         let widths = &quad.border_widths;
         let edge_radii = Edges {
             top: radii.top_left.max(radii.top_right),
@@ -4822,6 +4871,8 @@ impl Window {
             corner_radii: quad.corner_radii.scale(self.scale_factor()),
             border_widths: snapped_border_widths,
             border_style: quad.border_style,
+            corner_smoothing: quad.corner_smoothing,
+            pad: 0,
         };
 
         if !quad.background.is_transparent() {
@@ -4866,13 +4917,13 @@ impl Window {
             let content_mask_bounds = quad.content_mask.bounds.intersect(&strip);
             if !content_mask_bounds.is_empty() {
                 self.next_frame.scene.insert_primitive(Quad {
-                    content_mask: ContentMask {
-                        bounds: content_mask_bounds,
-                        corner_radii: if content_mask_bounds == quad.content_mask.bounds {
-                            quad.content_mask.corner_radii
-                        } else {
-                            Corners::default()
-                        },
+                    content_mask: if content_mask_bounds == quad.content_mask.bounds {
+                        quad.content_mask
+                    } else {
+                        ContentMask {
+                            bounds: content_mask_bounds,
+                            ..Default::default()
+                        }
                     },
                     ..quad
                 });
@@ -5096,7 +5147,7 @@ impl Window {
 
             self.next_frame.scene.insert_primitive(PolychromeSprite {
                 order: 0,
-                pad: 0,
+                corner_smoothing: 0.,
                 grayscale: false.into(),
                 bounds,
                 corner_radii: Default::default(),
@@ -5186,6 +5237,7 @@ impl Window {
         bounds: Bounds<Pixels>,
         image_bounds: Bounds<Pixels>,
         corner_radii: Corners<Pixels>,
+        corner_smoothing: f32,
         data: Arc<RenderImage>,
         frame_index: usize,
         grayscale: bool,
@@ -5268,7 +5320,7 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
-            pad: 0,
+            corner_smoothing,
             grayscale: grayscale.into(),
             bounds: visible_bounds_snapped,
             content_mask,
@@ -5312,6 +5364,7 @@ impl Window {
         &mut self,
         bounds: Bounds<Pixels>,
         corner_radii: Corners<Pixels>,
+        corner_smoothing: f32,
         data: Arc<crate::RenderImageWide>,
     ) -> Result<()> {
         self.invalidator.debug_assert_paint();
@@ -5337,7 +5390,7 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
-            pad: 0,
+            corner_smoothing,
             grayscale: false.into(),
             bounds,
             content_mask,
@@ -8165,9 +8218,19 @@ pub struct PaintQuad {
     pub border_color: Hsla,
     /// The style of the quad's borders.
     pub border_style: BorderStyle,
+    /// How far the rounded corners are smoothed toward a squircle, from 0 to 1.
+    pub corner_smoothing: f32,
 }
 
 impl PaintQuad {
+    /// Sets how far the rounded corners are smoothed toward a squircle, from 0 to 1.
+    pub fn corner_smoothing(self, corner_smoothing: f32) -> Self {
+        PaintQuad {
+            corner_smoothing,
+            ..self
+        }
+    }
+
     /// Sets the corner radii of the quad.
     pub fn corner_radii(self, corner_radii: impl Into<Corners<Pixels>>) -> Self {
         PaintQuad {
@@ -8217,6 +8280,7 @@ pub fn quad(
         border_widths: border_widths.into(),
         border_color: border_color.into(),
         border_style,
+        corner_smoothing: 0.,
     }
 }
 
@@ -8229,6 +8293,7 @@ pub fn fill(bounds: impl Into<Bounds<Pixels>>, background: impl Into<Background>
         border_widths: (0.).into(),
         border_color: transparent_black(),
         border_style: BorderStyle::default(),
+        corner_smoothing: 0.,
     }
 }
 
@@ -8245,6 +8310,7 @@ pub fn outline(
         border_widths: (1.).into(),
         border_color: border_color.into(),
         border_style,
+        corner_smoothing: 0.,
     }
 }
 

@@ -84,6 +84,8 @@ impl From<Bounds<ScaledPixels>> for PodBounds {
 struct PodContentMask {
     bounds: PodBounds,
     corner_radii: [f32; 4],
+    corner_smoothing: f32,
+    pad: f32,
 }
 
 #[repr(C)]
@@ -2657,11 +2659,16 @@ mod tests {
             order: 0,
             border_style: BorderStyle::Solid,
             bounds,
-            content_mask: ContentMask { bounds },
+            content_mask: ContentMask {
+                bounds,
+                ..Default::default()
+            },
             background: color.into(),
             border_color: color,
             corner_radii: Corners::default(),
             border_widths: Edges::default(),
+            corner_smoothing: 0.,
+            pad: 0,
         }
     }
 
@@ -2811,14 +2818,14 @@ mod tests {
 
     #[test]
     fn webgl_record_sizes_match_shader_word_strides() {
-        assert_eq!(std::mem::size_of::<Quad>(), 44 * 4);
-        assert_eq!(std::mem::size_of::<Shadow>(), 32 * 4);
-        assert_eq!(std::mem::size_of::<PathRasterizationVertex>(), 34 * 4);
+        assert_eq!(std::mem::size_of::<Quad>(), 48 * 4);
+        assert_eq!(std::mem::size_of::<Shadow>(), 34 * 4);
+        assert_eq!(std::mem::size_of::<PathRasterizationVertex>(), 36 * 4);
         assert_eq!(std::mem::size_of::<PathSprite>(), 4 * 4);
-        assert_eq!(std::mem::size_of::<Underline>(), 20 * 4);
-        assert_eq!(std::mem::size_of::<MonochromeSprite>(), 32 * 4);
-        assert_eq!(std::mem::size_of::<SubpixelSprite>(), 32 * 4);
-        assert_eq!(std::mem::size_of::<PolychromeSprite>(), 28 * 4);
+        assert_eq!(std::mem::size_of::<Underline>(), 22 * 4);
+        assert_eq!(std::mem::size_of::<MonochromeSprite>(), 34 * 4);
+        assert_eq!(std::mem::size_of::<SubpixelSprite>(), 34 * 4);
+        assert_eq!(std::mem::size_of::<PolychromeSprite>(), 30 * 4);
     }
 
     #[test]
@@ -2853,6 +2860,8 @@ mod tests {
                     bottom_right: 36.0.into(),
                     bottom_left: 37.0.into(),
                 },
+                corner_smoothing: 38.0,
+                pad: 0.0,
             },
             background: linear_gradient(
                 11.0,
@@ -2894,6 +2903,8 @@ mod tests {
                 bottom: 32.0.into(),
                 left: 33.0.into(),
             },
+            corner_smoothing: 39.0,
+            pad: 0,
         };
 
         let bytes = unsafe { WgpuRendererCore::instance_bytes(std::slice::from_ref(&quad)) };
@@ -2915,6 +2926,8 @@ mod tests {
                 35.0_f32.to_bits(),
                 36.0_f32.to_bits(),
                 37.0_f32.to_bits(),
+                38.0_f32.to_bits(),
+                0,
                 1,
                 1,
                 0,
@@ -2945,6 +2958,8 @@ mod tests {
                 31.0_f32.to_bits(),
                 32.0_f32.to_bits(),
                 33.0_f32.to_bits(),
+                39.0_f32.to_bits(),
+                0,
             ]
         );
     }
