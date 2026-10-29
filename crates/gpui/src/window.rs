@@ -783,6 +783,9 @@ impl HitboxId {
     ///
     /// See [`Hitbox::is_hovered`] for details.
     pub fn is_hovered(self, window: &Window) -> bool {
+        if let Some(pen_capture_hitbox) = window.pen_capture_hitbox {
+            return pen_capture_hitbox == self;
+        }
         // If this hitbox has captured the pointer, it's always considered hovered
         if window.captured_hitbox == Some(self) {
             return true;
@@ -798,6 +801,9 @@ impl HitboxId {
     ///
     /// See [`HitboxId::is_hovered`] for more details.
     pub(crate) fn is_hovered_ignoring_last_input(self, window: &Window) -> bool {
+        if let Some(pen_capture_hitbox) = window.pen_capture_hitbox {
+            return pen_capture_hitbox == self;
+        }
         // If this hitbox has captured the pointer, it's always considered hovered
         if window.captured_hitbox == Some(self) {
             return true;
@@ -1044,6 +1050,7 @@ pub(crate) struct Frame {
     pub(crate) dispatch_tree: DispatchTree,
     pub(crate) scene: Scene,
     pub(crate) hitboxes: Vec<Hitbox>,
+    pub(crate) scroll_regions: FxHashSet<HitboxId>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
@@ -1100,6 +1107,7 @@ impl Frame {
             dispatch_tree,
             scene: Scene::default(),
             hitboxes: Vec::new(),
+            scroll_regions: FxHashSet::default(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
             input_handlers: Vec::new(),
@@ -1130,6 +1138,7 @@ impl Frame {
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
         self.hitboxes.clear();
+        self.scroll_regions.clear();
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();
@@ -1299,6 +1308,8 @@ pub struct Window {
     /// The hitbox that has captured the pointer, if any.
     /// While captured, mouse events route to this hitbox regardless of hit testing.
     captured_hitbox: Option<HitboxId>,
+    pen_strokes: crate::pen::PenStrokes,
+    pen_capture_hitbox: Option<HitboxId>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     inspector: Option<Entity<Inspector>>,
     #[cfg(feature = "profiler")]
@@ -2278,6 +2289,8 @@ impl Window {
             client_inset: None,
             image_cache_stack: Vec::new(),
             captured_hitbox: None,
+            pen_strokes: Default::default(),
+            pen_capture_hitbox: None,
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
             #[cfg(feature = "profiler")]
@@ -4100,11 +4113,17 @@ impl Window {
     }
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
-        self.next_frame.hitboxes.extend(
-            self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
+        let reused_hitboxes =
+            &self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index];
+        self.next_frame.scroll_regions.extend(
+            reused_hitboxes
                 .iter()
-                .cloned(),
+                .map(|hitbox| hitbox.id)
+                .filter(|id| self.rendered_frame.scroll_regions.contains(id)),
         );
+        self.next_frame
+            .hitboxes
+            .extend(reused_hitboxes.iter().cloned());
         self.next_frame.tooltip_requests.extend(
             self.rendered_frame.tooltip_requests
                 [range.start.tooltips_index..range.end.tooltips_index]
@@ -5793,6 +5812,7 @@ impl Window {
             PlatformInput::KeyDown(_) => InputModality::Keyboard,
             PlatformInput::MouseMove(_) | PlatformInput::MouseDown(_) => InputModality::Mouse,
             PlatformInput::Touch(_) => InputModality::Touch,
+            PlatformInput::Pen(_) => InputModality::Mouse,
             _ => self.last_input_modality,
         };
         if self.last_input_modality != old_modality {
@@ -5902,6 +5922,14 @@ impl Window {
                 }
             },
             PlatformInput::Touch(touch) => PlatformInput::Touch(touch),
+            PlatformInput::Pen(pen) => {
+                if pen.phase != crate::PenPhase::Revised {
+                    self.mouse_position = pen.position();
+                }
+                self.modifiers = pen.modifiers;
+                PlatformInput::Pen(pen)
+            }
+            PlatformInput::PenGesture(gesture) => PlatformInput::PenGesture(gesture),
             PlatformInput::LongPress(long_press) => {
                 self.mouse_position = if long_press.phase == crate::TouchPhase::Started {
                     long_press.start_position
@@ -5924,7 +5952,9 @@ impl Window {
             PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
         };
 
-        if let Some(any_mouse_event) = event.mouse_event() {
+        if let PlatformInput::Pen(pen) = &event {
+            self.dispatch_pen_event(pen, cx);
+        } else if let Some(any_mouse_event) = event.mouse_event() {
             self.dispatch_mouse_event(any_mouse_event, cx);
         } else if let Some(any_key_event) = event.keyboard_event() {
             self.dispatch_key_event(any_key_event, cx);
@@ -6165,6 +6195,118 @@ impl Window {
                 window.schedule_touch_momentum_tick();
             }
         });
+    }
+
+    fn dispatch_pen_event(&mut self, event: &crate::PenEvent, cx: &mut App) {
+        use crate::pen::PenRoute;
+
+        let scroll_slop = self.touch_gestures.tuning().touch_slop;
+        let mut over_scroll_region = false;
+        let claimed = match self.pen_strokes.route(event, scroll_slop) {
+            PenRoute::HitTest => {
+                self.dispatch_mouse_event(event, cx);
+                if event.phase == crate::PenPhase::Down
+                    && self.default_prevented
+                    && self.pen_strokes.yields_to_scroll()
+                {
+                    over_scroll_region = self
+                        .rendered_frame
+                        .hit_test(event.position())
+                        .ids
+                        .iter()
+                        .any(|id| self.rendered_frame.scroll_regions.contains(id));
+                }
+                self.default_prevented
+            }
+            PenRoute::Claimed(hitbox) => {
+                self.pen_capture_hitbox = hitbox;
+                self.dispatch_mouse_event(event, cx);
+                self.pen_capture_hitbox = None;
+                true
+            }
+            PenRoute::YieldToScroll { hitbox, start } => {
+                let mut cancel = event.clone();
+                cancel.phase = crate::PenPhase::Cancelled;
+                self.pen_capture_hitbox = hitbox;
+                self.dispatch_mouse_event(&cancel, cx);
+                self.pen_capture_hitbox = None;
+                let id = self.pen_strokes.start_scroll(event.id);
+                self.dispatch_touch_event(
+                    &TouchEvent {
+                        id,
+                        phase: crate::TouchPhase::Started,
+                        position: start,
+                        predicted_position: None,
+                        force: None,
+                    },
+                    cx,
+                );
+                self.dispatch_pen_scroll(id, event, cx);
+                true
+            }
+            PenRoute::Scroll(id) => {
+                self.dispatch_pen_scroll(id, event, cx);
+                true
+            }
+            PenRoute::Consumed => true,
+            PenRoute::Declined => false,
+        };
+        self.pen_strokes.finish(event, claimed, over_scroll_region);
+        self.default_prevented = claimed;
+    }
+
+    fn dispatch_pen_scroll(&mut self, id: crate::TouchId, event: &crate::PenEvent, cx: &mut App) {
+        let phase = match event.phase {
+            crate::PenPhase::Up => crate::TouchPhase::Ended,
+            crate::PenPhase::Cancelled => crate::TouchPhase::Cancelled,
+            _ => crate::TouchPhase::Moved,
+        };
+        self.dispatch_touch_event(
+            &TouchEvent {
+                id,
+                phase,
+                position: event.position(),
+                predicted_position: event.predicted.last().map(|sample| sample.position),
+                force: None,
+            },
+            cx,
+        );
+    }
+
+    /// Claims the pen stroke whose [`PenPhase::Down`](crate::PenPhase::Down) event is being
+    /// dispatched, like [`Window::prevent_default`], unless it turns into scrolling.
+    ///
+    /// When the stroke starts over a region registered with [`Window::insert_scroll_region`]
+    /// and moves farther than the touch slop, the claiming element receives
+    /// [`PenPhase::Cancelled`](crate::PenPhase::Cancelled) and the rest of the stroke scrolls
+    /// like a touch drag. Elsewhere the claim holds for the whole stroke.
+    pub fn claim_pen_unless_scrolled(&mut self) {
+        self.prevent_default();
+        self.pen_strokes.yield_to_scroll();
+    }
+
+    /// Registers a hitbox inserted during this prepaint as a region that scrolls when dragged,
+    /// so that pen strokes claimed with [`Window::claim_pen_unless_scrolled`] over it can turn
+    /// into scrolling. Elements with `overflow_scroll` and lists register themselves.
+    pub fn insert_scroll_region(&mut self, hitbox: HitboxId) {
+        self.invalidator.debug_assert_prepaint();
+        self.next_frame.scroll_regions.insert(hitbox);
+    }
+
+    /// Moves a pen stroke claimed by `previous` to `current`, the same element's hitbox in
+    /// the frame being painted.
+    pub(crate) fn rebind_pen_hitbox(&mut self, previous: HitboxId, current: HitboxId) {
+        self.pen_strokes.rebind(previous, current);
+    }
+
+    pub(crate) fn pen_click_slop(&self) -> Pixels {
+        self.touch_gestures.tuning().pen_click_slop
+    }
+
+    /// Records the hitbox that claims the pen stroke whose
+    /// [`PenPhase::Down`](crate::PenPhase::Down) event is being dispatched.
+    pub(crate) fn offer_pen_hitbox(&mut self, hitbox: HitboxId) {
+        self.pen_strokes.offer_hitbox(hitbox);
     }
 
     fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {

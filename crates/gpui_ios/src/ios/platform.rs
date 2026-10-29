@@ -18,9 +18,10 @@ use futures::{
 };
 use gpui::{
     Action, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, ClipboardItem, CursorStyle,
-    DummyKeyboardMapper, ForegroundExecutor, Keymap, Menu, MenuItem, PathPromptOptions, Platform,
-    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PlatformWindow, PowerMode, Result, Task, ThermalState, WindowAppearance, WindowParams,
+    DummyKeyboardMapper, ForegroundExecutor, GestureTuning, Keymap, Menu, MenuItem,
+    PathPromptOptions, Platform, PlatformDisplay, PlatformGestures, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, PowerMode, Result, Task,
+    ThermalState, WindowAppearance, WindowParams, px,
 };
 use gpui_apple::{
     AppleDispatcher, keychain, main_thread_marker,
@@ -182,6 +183,17 @@ impl PlatformKeyboardLayout for IosKeyboardLayout {
     }
 }
 
+struct IosGestures;
+
+impl PlatformGestures for IosGestures {
+    fn tuning(&self) -> GestureTuning {
+        GestureTuning {
+            pen_click_slop: px(70.),
+            ..GestureTuning::default()
+        }
+    }
+}
+
 impl Platform for IosPlatform {
     fn platform_info(&self) -> gpui::PlatformInfo {
         gpui::PlatformInfo {
@@ -261,6 +273,10 @@ impl Platform for IosPlatform {
         let window = Box::new(IosWindow::new(handle, options, &self.0)?);
         window.register();
         Ok(window)
+    }
+
+    fn gestures(&self) -> Option<Rc<dyn PlatformGestures>> {
+        Some(Rc::new(IosGestures))
     }
 
     fn window_appearance(&self) -> WindowAppearance {

@@ -3,6 +3,7 @@
 mod application;
 mod display;
 mod events;
+mod pen;
 mod platform;
 mod text_input;
 mod window;

@@ -23,8 +23,9 @@ use crate::{
     KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId, LongPressEvent,
     ModifiersChangedEvent, MouseButton, MouseClickEvent, MouseDownEvent, MouseExitEvent,
     MouseMoveEvent, MousePressureEvent, MouseUpEvent, OngoingScroll, Overflow, ParentElement,
-    PinchEvent, Pixels, Point, Render, ScrollEvent, SharedString, Size, Style, StyleRefinement,
-    Styled, Task, TooltipId, TouchPhase, Visibility, Window, WindowControlArea, point, px, size,
+    PenEvent, PenGestureEvent, PenPhase, PinchEvent, Pixels, Point, Render, ScrollEvent,
+    SharedString, Size, Style, StyleRefinement, Styled, Task, TooltipId, TouchClickEvent,
+    TouchPhase, Visibility, Window, WindowControlArea, point, px, size,
 };
 use collections::HashMap;
 use gpui_util::ResultExt;
@@ -166,6 +167,50 @@ impl Interactivity {
         self.mouse_down_listeners
             .push(Box::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
+                    (listener)(event, window, cx)
+                }
+            }));
+    }
+
+    /// Bind the given callback to pen events, during the bubble phase.
+    /// Call [`Window::prevent_default`] on a [`PenPhase::Down`] event to claim the stroke,
+    /// so that its later events keep arriving here even outside this element.
+    /// The imperative API equivalent to [`InteractiveElement::on_pen`].
+    ///
+    /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
+    pub fn on_pen(&mut self, listener: impl Fn(&PenEvent, &mut Window, &mut App) + 'static) {
+        self.pen_listeners
+            .push(Box::new(move |event, phase, hitbox, window, cx| {
+                if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
+                    call_pen_listener(&listener, event, hitbox, window, cx)
+                }
+            }));
+    }
+
+    /// Bind the given callback to pen events, during the capture phase.
+    /// The imperative API equivalent to [`InteractiveElement::capture_pen`].
+    ///
+    /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
+    pub fn capture_pen(&mut self, listener: impl Fn(&PenEvent, &mut Window, &mut App) + 'static) {
+        self.pen_listeners
+            .push(Box::new(move |event, phase, hitbox, window, cx| {
+                if phase == DispatchPhase::Capture && hitbox.is_hovered(window) {
+                    call_pen_listener(&listener, event, hitbox, window, cx)
+                }
+            }));
+    }
+
+    /// Bind the given callback to pen gesture events, which follow the focus path like key events.
+    /// The imperative API equivalent to [`InteractiveElement::on_pen_gesture`].
+    ///
+    /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
+    pub fn on_pen_gesture(
+        &mut self,
+        listener: impl Fn(&PenGestureEvent, &mut Window, &mut App) + 'static,
+    ) {
+        self.pen_gesture_listeners
+            .push(Box::new(move |event, phase, window, cx| {
+                if phase == DispatchPhase::Bubble {
                     (listener)(event, window, cx)
                 }
             }));
@@ -972,6 +1017,18 @@ pub trait InteractiveElement: Sized {
         self
     }
 
+    /// Bind the given callback to pen gesture events.
+    /// The fluent API equivalent to [`Interactivity::on_pen_gesture`].
+    ///
+    /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
+    fn on_pen_gesture(
+        mut self,
+        listener: impl Fn(&PenGestureEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.interactivity().on_pen_gesture(listener);
+        self
+    }
+
     /// Bind the given callback to the mouse pressure event, during the bubble phase
     /// the fluent API equivalent to [`Interactivity::on_mouse_pressure`]
     ///
@@ -1629,6 +1686,36 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    /// Bind the given callback to pen events, during the bubble phase.
+    /// The fluent API equivalent to [`Interactivity::on_pen`].
+    ///
+    /// The element needs an id so that a stroke it claims keeps reaching it after it is
+    /// rendered again.
+    ///
+    /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
+    fn on_pen(mut self, listener: impl Fn(&PenEvent, &mut Window, &mut App) + 'static) -> Self
+    where
+        Self: Sized,
+    {
+        self.interactivity().on_pen(listener);
+        self
+    }
+
+    /// Bind the given callback to pen events, during the capture phase.
+    /// The fluent API equivalent to [`Interactivity::capture_pen`].
+    ///
+    /// The element needs an id so that a stroke it claims keeps reaching it after it is
+    /// rendered again.
+    ///
+    /// See [`Context::listener`](crate::Context::listener) to get access to a view's state from this callback.
+    fn capture_pen(mut self, listener: impl Fn(&PenEvent, &mut Window, &mut App) + 'static) -> Self
+    where
+        Self: Sized,
+    {
+        self.interactivity().capture_pen(listener);
+        self
+    }
+
     /// Bind the given callback to click events of this element.
     /// The fluent API equivalent to [`Interactivity::on_click`].
     ///
@@ -1767,6 +1854,24 @@ pub(crate) type MouseUpListener =
     Box<dyn Fn(&MouseUpEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
 pub(crate) type MousePressureListener =
     Box<dyn Fn(&MousePressureEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
+pub(crate) type PenListener =
+    Box<dyn Fn(&PenEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
+pub(crate) type PenGestureListener =
+    Box<dyn Fn(&PenGestureEvent, DispatchPhase, &mut Window, &mut App) + 'static>;
+
+fn call_pen_listener(
+    listener: &impl Fn(&PenEvent, &mut Window, &mut App),
+    event: &PenEvent,
+    hitbox: &Hitbox,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let prevented = window.default_prevented();
+    listener(event, window, cx);
+    if event.phase == PenPhase::Down && !prevented && window.default_prevented() {
+        window.offer_pen_hitbox(hitbox.id);
+    }
+}
 pub(crate) type MouseMoveListener =
     Box<dyn Fn(&MouseMoveEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
 pub(crate) type MouseExitListener =
@@ -2216,6 +2321,8 @@ pub struct Interactivity {
     pub(crate) mouse_down_listeners: Vec<MouseDownListener>,
     pub(crate) mouse_up_listeners: Vec<MouseUpListener>,
     pub(crate) mouse_pressure_listeners: Vec<MousePressureListener>,
+    pub(crate) pen_listeners: Vec<PenListener>,
+    pub(crate) pen_gesture_listeners: Vec<PenGestureListener>,
     pub(crate) mouse_move_listeners: Vec<MouseMoveListener>,
     pub(crate) mouse_exit_listeners: Vec<MouseExitListener>,
     pub(crate) file_drop_exit_listeners: Vec<FileDropExitListener>,
@@ -2443,6 +2550,13 @@ impl Interactivity {
                             } else {
                                 None
                             };
+                            if let Some(hitbox) = &hitbox
+                                && self.scroll_offset.is_some()
+                                && (style.overflow.x == Overflow::Scroll
+                                    || style.overflow.y == Overflow::Scroll)
+                            {
+                                window.insert_scroll_region(hitbox.id);
+                            }
 
                             let scroll_offset =
                                 self.clamp_scroll_position(bounds, &style, window, cx);
@@ -2467,6 +2581,7 @@ impl Interactivity {
             || self.hover_listener.is_some()
             || !self.mouse_up_listeners.is_empty()
             || !self.mouse_pressure_listeners.is_empty()
+            || !self.pen_listeners.is_empty()
             || !self.mouse_down_listeners.is_empty()
             || !self.mouse_move_listeners.is_empty()
             || !self.mouse_exit_listeners.is_empty()
@@ -2810,7 +2925,7 @@ impl Interactivity {
     fn paint_mouse_listeners(
         &mut self,
         hitbox: &Hitbox,
-        element_state: Option<&mut InteractiveElementState>,
+        mut element_state: Option<&mut InteractiveElementState>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -2855,6 +2970,21 @@ impl Interactivity {
         for listener in self.mouse_pressure_listeners.drain(..) {
             let hitbox = hitbox.clone();
             window.on_mouse_event(move |event: &MousePressureEvent, phase, window, cx| {
+                listener(event, phase, &hitbox, window, cx);
+            })
+        }
+
+        let has_pen_listeners = !self.pen_listeners.is_empty();
+        if (has_pen_listeners || !self.click_listeners.is_empty())
+            && let Some(element_state) = element_state.as_deref_mut()
+            && let Some(previous) = element_state.pen_hitbox.replace(hitbox.id)
+        {
+            window.rebind_pen_hitbox(previous, hitbox.id);
+        }
+
+        for listener in self.pen_listeners.drain(..) {
+            let hitbox = hitbox.clone();
+            window.on_mouse_event(move |event: &PenEvent, phase, window, cx| {
                 listener(event, phase, &hitbox, window, cx);
             })
         }
@@ -3011,6 +3141,63 @@ impl Interactivity {
                     .clicked_state
                     .get_or_insert_with(Default::default)
                     .clone();
+
+                if !click_listeners.is_empty() && !has_pen_listeners {
+                    let pending_pen_down = element_state
+                        .pending_pen_down
+                        .get_or_insert_with(Default::default)
+                        .clone();
+                    let click_listeners = click_listeners.clone();
+                    let clicked_state = clicked_state.clone();
+                    let hitbox = hitbox.clone();
+                    let focus_handle = self.tracked_focus_handle.clone();
+                    window.on_mouse_event(move |event: &PenEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Bubble {
+                            return;
+                        }
+                        let release = |window: &mut Window| {
+                            clicked_state.borrow_mut().element = false;
+                            window.refresh();
+                            pending_pen_down.replace(false)
+                        };
+                        match event.phase {
+                            PenPhase::Down => {
+                                pending_pen_down.set(false);
+                                if !window.default_prevented() && hitbox.is_hovered(window) {
+                                    window.claim_pen_unless_scrolled();
+                                    window.offer_pen_hitbox(hitbox.id);
+                                    pending_pen_down.set(true);
+                                    clicked_state.borrow_mut().element = true;
+                                    window.refresh();
+                                    if let Some(focus_handle) = &focus_handle {
+                                        focus_handle.focus(window, cx);
+                                    }
+                                }
+                            }
+                            PenPhase::Up => {
+                                let position = event.position();
+                                let slop = window.pen_click_slop();
+                                let within = hitbox.is_hovered_at(position, window)
+                                    || (!hitbox.bounds.contains(&position)
+                                        && hitbox.bounds.dilate(slop).contains(&position));
+                                if release(window) && within {
+                                    let click = ClickEvent::Touch(TouchClickEvent {
+                                        position,
+                                        tap_count: 1,
+                                        long_press: false,
+                                    });
+                                    for listener in &click_listeners {
+                                        listener(&click, window, cx);
+                                    }
+                                }
+                            }
+                            PenPhase::Cancelled => {
+                                release(window);
+                            }
+                            _ => {}
+                        }
+                    });
+                }
 
                 window.on_mouse_event({
                     let pending_mouse_down = pending_mouse_down.clone();
@@ -3334,6 +3521,7 @@ impl Interactivity {
         let key_down_listeners = mem::take(&mut self.key_down_listeners);
         let key_up_listeners = mem::take(&mut self.key_up_listeners);
         let modifiers_changed_listeners = mem::take(&mut self.modifiers_changed_listeners);
+        let pen_gesture_listeners = mem::take(&mut self.pen_gesture_listeners);
         let action_listeners = mem::take(&mut self.action_listeners);
         if let Some(context) = self.key_context.clone() {
             window.set_key_context(context);
@@ -3354,6 +3542,12 @@ impl Interactivity {
         for listener in modifiers_changed_listeners {
             window.on_modifiers_changed(move |event: &ModifiersChangedEvent, window, cx| {
                 listener(event, window, cx);
+            })
+        }
+
+        for listener in pen_gesture_listeners {
+            window.on_key_event(move |event: &PenGestureEvent, phase, window, cx| {
+                listener(event, phase, window, cx);
             })
         }
 
@@ -3671,6 +3865,8 @@ pub struct InteractiveElementState {
     pub(crate) hover_state: Option<Rc<RefCell<ElementHoverState>>>,
     pub(crate) hover_listener_state: Option<Rc<RefCell<bool>>>,
     pub(crate) pending_mouse_down: Option<Rc<RefCell<Option<MouseDownEvent>>>>,
+    pen_hitbox: Option<HitboxId>,
+    pending_pen_down: Option<Rc<Cell<bool>>>,
     /// Set to the window's [`focus_generation`](crate::Window::focus_generation)
     /// when an Enter/Space keydown is received while this element is focused,
     /// recording that we are waiting for the matching keyup to fire a keyboard

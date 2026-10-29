@@ -123,6 +123,8 @@ pub struct GestureTuning {
     /// Minimum release velocity, in pixels per second, required to start
     /// scroll momentum.
     pub min_fling_velocity: f32,
+    /// How far outside an element a pen may lift and still click it.
+    pub pen_click_slop: Pixels,
 }
 
 impl Default for GestureTuning {
@@ -134,6 +136,7 @@ impl Default for GestureTuning {
             long_press_duration: Duration::from_millis(500),
             scroll_physics: ScrollPhysics::ios(),
             min_fling_velocity: 50.,
+            pen_click_slop: px(0.),
         }
     }
 }
@@ -614,6 +617,10 @@ struct Momentum {
 }
 
 impl TouchGestureRecognizer {
+    pub(crate) fn tuning(&self) -> &GestureTuning {
+        &self.tuning
+    }
+
     pub(crate) fn new(tuning: GestureTuning) -> Self {
         Self {
             tuning,

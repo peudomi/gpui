@@ -41,7 +41,7 @@ use objc2_ui_kit::{
 use objc2_ui_kit::{
     UICornerConfiguration, UICornerRadius, UIEvent, UIGestureRecognizer,
     UIGestureRecognizerDelegate, UIPanGestureRecognizer, UIRectCorner, UIRectEdge, UIScreen,
-    UIScreenEdgePanGestureRecognizer, UIScrollTypeMask, UITouch, UITraitCollection,
+    UIScreenEdgePanGestureRecognizer, UIScrollTypeMask, UITouch, UITouchType, UITraitCollection,
     UITraitEnvironment, UIUserInterfaceLayoutDirection, UIUserInterfaceStyle, UIView,
     UIViewAutoresizing, UIViewController, UIWindow, UIWindowScene,
 };
@@ -187,6 +187,12 @@ define_class!(
             self.handle_touches(touches, event);
         }
 
+        #[unsafe(method(touchesEstimatedPropertiesUpdated:))]
+        fn touches_estimated_properties_updated(&self, touches: &NSSet<UITouch>) {
+            self.ivars()
+                .with_window(|window| window.pen.handle_revisions(window, touches));
+        }
+
         #[unsafe(method(handleScroll:))]
         fn handle_scroll(&self, recognizer: &UIPanGestureRecognizer) {
             self.ivars()
@@ -204,7 +210,9 @@ define_class!(
         // Only the back-gesture recognizer uses this view as its delegate.
         #[unsafe(method(gestureRecognizerShouldBegin:))]
         fn gesture_recognizer_should_begin(&self, recognizer: &UIGestureRecognizer) -> bool {
-            self.ivars()
+            super::pen::owns(recognizer)
+                || self
+                    .ivars()
                 .with_window(|window| window.begin_back_gesture(recognizer))
                 .unwrap_or(false)
         }
@@ -289,6 +297,7 @@ pub(crate) struct IosWindowState {
     mouse_position: Cell<Point<Pixels>>,
     /// Current modifiers
     modifiers: Cell<Modifiers>,
+    pen: super::pen::PenInput,
     renderer: Mutex<MetalRenderer>,
 }
 
@@ -400,6 +409,7 @@ impl IosWindow {
         );
         back_recognizer.setDelegate(Some(ProtocolObject::from_ref(&*view)));
         view.addGestureRecognizer(&back_recognizer);
+        let pen = super::pen::PenInput::new(&view, main_thread);
 
         let view_controller = ViewController::new(main_thread);
         view_controller.setView(Some(&view));
@@ -448,6 +458,7 @@ impl IosWindow {
             keyboard_height: Cell::new(0.),
             mouse_position: Cell::new(Point::default()),
             modifiers: Cell::new(Modifiers::default()),
+            pen,
             renderer: Mutex::new(renderer),
         };
 
@@ -464,6 +475,7 @@ impl IosWindow {
         let window = Rc::downgrade(&self.state);
         *self.view_controller.ivars().0.borrow_mut() = window.clone();
         *self.view.ivars().0.borrow_mut() = window.clone();
+        self.state.pen.set_window(window.clone());
         self.text_input_view.set_window(window);
 
         self.state.register_keyboard_observers();
@@ -474,6 +486,7 @@ impl IosWindowState {
     pub(super) fn attach_to_scene(&self, scene: &UIWindowScene) {
         self.window.setWindowScene(Some(scene));
         self.window.makeKeyAndVisible();
+        self.pen.attach_to_scene(&self.view);
         self.handle_layout_change();
     }
 
@@ -525,8 +538,42 @@ impl IosWindowState {
         }
     }
 
+    pub(super) fn pen(&self) -> &super::pen::PenInput {
+        &self.pen
+    }
+
+    pub(super) fn view(&self) -> &UIView {
+        &self.view
+    }
+
+    /// Dispatches pen input and returns whether an element claimed it.
+    pub(super) fn dispatch_pen_input(&self, mut input: PlatformInput) -> bool {
+        match &mut input {
+            PlatformInput::Pen(event) => {
+                event.modifiers = self.modifiers.get();
+                if event.phase != gpui::PenPhase::Revised {
+                    self.mouse_position.set(event.position());
+                }
+            }
+            PlatformInput::MouseMove(event) => {
+                event.modifiers = self.modifiers.get();
+                self.mouse_position.set(event.position);
+            }
+            PlatformInput::MouseExited(event) => event.modifiers = self.modifiers.get(),
+            _ => {}
+        }
+        self.input_callback
+            .with(|callback| callback(input))
+            .is_some_and(|result| result.default_prevented)
+    }
+
     /// Delivers a UIKit touch through GPUI's platform-neutral touch API.
-    pub fn handle_touch(&self, touch: &UITouch, _event: Option<&UIEvent>) {
+    /// Pencil touches go to the pen input first and reach the touch API only
+    /// when no element claims their stroke.
+    pub fn handle_touch(&self, touch: &UITouch, event: Option<&UIEvent>) {
+        if touch.r#type() == UITouchType::Pencil && self.pen.handle_touch(self, touch, event) {
+            return;
+        }
         // GPUI timestamps delivery itself. Replaying UIKit's historical coalesced
         // samples here would make them appear simultaneous and distort fling velocity.
         let id = touch_id(touch);

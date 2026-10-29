@@ -833,6 +833,10 @@ pub enum PlatformInput {
     FileDrop(FileDropEvent),
     /// A raw touch event on a touch screen.
     Touch(TouchEvent),
+    /// A pen sample stream from a digitizer.
+    Pen(crate::PenEvent),
+    /// A gesture performed on the pen body.
+    PenGesture(crate::PenGestureEvent),
 }
 
 impl PlatformInput {
@@ -853,6 +857,8 @@ impl PlatformInput {
             PlatformInput::BackGesture(event) => Some(event),
             PlatformInput::FileDrop(event) => Some(event),
             PlatformInput::Touch(_) => None,
+            PlatformInput::Pen(event) => Some(event),
+            PlatformInput::PenGesture(_) => None,
         }
     }
 
@@ -873,6 +879,8 @@ impl PlatformInput {
             PlatformInput::BackGesture(_) => None,
             PlatformInput::FileDrop(_) => None,
             PlatformInput::Touch(_) => None,
+            PlatformInput::Pen(_) => None,
+            PlatformInput::PenGesture(event) => Some(event),
         }
     }
 
@@ -895,6 +903,8 @@ impl PlatformInput {
             PlatformInput::BackGesture(_) => "back_gesture",
             PlatformInput::FileDrop(_) => "file_drop",
             PlatformInput::Touch(_) => "touch",
+            PlatformInput::Pen(_) => "pen",
+            PlatformInput::PenGesture(_) => "pen_gesture",
         }
     }
 

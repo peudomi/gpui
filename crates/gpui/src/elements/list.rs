@@ -1555,6 +1555,7 @@ impl Element for List {
         style.refine(&self.style);
 
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        window.insert_scroll_region(hitbox.id);
 
         // If the width of the list has changed, invalidate all cached item heights
         if state
