@@ -1,4 +1,5 @@
 use crate::metal_atlas::MetalAtlas;
+use crate::shader_quad::{MetalTextures, ShaderQuads};
 use anyhow::{Context as _, Result};
 use block2::RcBlock;
 use gpui::{
@@ -141,6 +142,7 @@ pub struct MetalRenderer {
     instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
     sprite_atlas: Arc<MetalAtlas>,
     core_video_texture_cache: CFRetained<CVMetalTextureCache>,
+    shader_quads: ShaderQuads,
     path_intermediate_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     path_intermediate_msaa_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     path_sample_count: u32,
@@ -449,6 +451,7 @@ impl MetalRenderer {
         let cache = ptr::NonNull::new(cache).context("retrieving CoreVideo Metal texture cache")?;
         // SAFETY: The successful create call transfers ownership of this non-null cache.
         let core_video_texture_cache = unsafe { CFRetained::from_raw(cache) };
+        let shader_quads = ShaderQuads::new(&device)?;
 
         Ok(Self {
             device,
@@ -471,6 +474,7 @@ impl MetalRenderer {
             instance_buffer_pool,
             sprite_atlas,
             core_video_texture_cache,
+            shader_quads,
             path_intermediate_texture: None,
             path_intermediate_msaa_texture: None,
             path_sample_count: PATH_SAMPLE_COUNT,
@@ -492,6 +496,10 @@ impl MetalRenderer {
 
     pub fn sprite_atlas(&self) -> &Arc<MetalAtlas> {
         &self.sprite_atlas
+    }
+
+    pub fn textures(&self) -> &Arc<MetalTextures> {
+        self.shader_quads.textures()
     }
 
     pub fn set_presents_with_transaction(&mut self, presents_with_transaction: bool) {
@@ -828,6 +836,9 @@ impl MetalRenderer {
             .commandBuffer()
             .context("creating command buffer")?;
         let alpha = if self.opaque { 1. } else { 0. };
+        self.shader_quads
+            .textures()
+            .encode_uploads(&command_buffer)?;
 
         let mut command_encoder = new_command_encoder_for_texture(
             &command_buffer,
@@ -911,6 +922,13 @@ impl MetalRenderer {
                         return Err(error);
                     }
                 }
+                PrimitiveBatch::Shaders(range) => self.shader_quads.draw(
+                    &scene.shaders[range],
+                    &self.device,
+                    self.pixel_format,
+                    viewport_size,
+                    &command_encoder,
+                ),
                 PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
             }
         }

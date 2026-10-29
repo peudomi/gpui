@@ -255,6 +255,10 @@ name = "corner_smoothing"
 path = "examples/corner_smoothing.rs"
 
 [[example]]
+name = "shader_quad"
+path = "examples/shader_quad.rs"
+
+[[example]]
 name = "svg"
 path = "examples/svg/svg.rs"
 

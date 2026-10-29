@@ -39,11 +39,11 @@ use objc2_ui_kit::{
     UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIStatusBarStyle,
 };
 use objc2_ui_kit::{
-    UICornerConfiguration, UICornerRadius, UIEvent, UIGestureRecognizer,
+    UICoordinateSpace, UICornerConfiguration, UICornerRadius, UIEvent, UIGestureRecognizer,
     UIGestureRecognizerDelegate, UIPanGestureRecognizer, UIRectCorner, UIRectEdge, UIScreen,
     UIScreenEdgePanGestureRecognizer, UIScrollTypeMask, UITouch, UITouchType, UITraitCollection,
     UITraitEnvironment, UIUserInterfaceLayoutDirection, UIUserInterfaceStyle, UIView,
-    UICoordinateSpace, UIViewAutoresizing, UIViewController, UIWindow, UIWindowScene,
+    UIViewAutoresizing, UIViewController, UIWindow, UIWindowScene,
 };
 use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
@@ -338,7 +338,10 @@ impl IosWindow {
         let window_scene = window_scene.as_deref();
         let (window, screen_bounds_cg, scale) = if let Some(scene) = window_scene {
             let screen = scene.screen();
-            let bounds = scene.effectiveGeometry().coordinateSpace(main_thread).bounds();
+            let bounds = scene
+                .effectiveGeometry()
+                .coordinateSpace(main_thread)
+                .bounds();
             let window = UIWindow::initWithWindowScene(UIWindow::alloc(main_thread), scene);
             window.setFrame(bounds);
             (window, bounds, screen.scale())
@@ -505,7 +508,12 @@ impl IosWindow {
 impl IosWindowState {
     pub(super) fn attach_to_scene(&self, scene: &UIWindowScene) {
         self.window.setWindowScene(Some(scene));
-        self.window.setFrame(scene.effectiveGeometry().coordinateSpace(scene.mtm()).bounds());
+        self.window.setFrame(
+            scene
+                .effectiveGeometry()
+                .coordinateSpace(scene.mtm())
+                .bounds(),
+        );
         self.window.makeKeyAndVisible();
         self.pen.attach_to_scene(&self.view);
         self.handle_layout_change();
@@ -1093,6 +1101,10 @@ impl PlatformWindow for IosWindow {
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.renderer.lock().sprite_atlas().clone()
+    }
+
+    fn textures(&self) -> Option<Arc<dyn gpui::PlatformTextures>> {
+        Some(self.renderer.lock().textures().clone())
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {

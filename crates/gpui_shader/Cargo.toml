@@ -1,0 +1,21 @@
+[package]
+name = "gpui_shader"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_shader.rs"
+doctest = false
+
+[features]
+default = []
+msl = ["naga/msl-out"]
+
+[dependencies]
+anyhow.workspace = true
+naga = { workspace = true, features = ["wgsl-in"] }

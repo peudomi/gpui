@@ -2171,6 +2171,10 @@ impl PlatformWindow for MacWindow {
         self.0.lock().renderer.sprite_atlas().clone()
     }
 
+    fn textures(&self) -> Option<Arc<dyn gpui::PlatformTextures>> {
+        Some(self.0.lock().renderer.textures().clone())
+    }
+
     fn gpu_specs(&self) -> Option<gpui::GpuSpecs> {
         None
     }

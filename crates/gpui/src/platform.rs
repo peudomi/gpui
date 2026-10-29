@@ -1344,6 +1344,9 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn draw(&self, scene: &Scene);
     fn schedule_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
+    fn textures(&self) -> Option<Arc<dyn crate::PlatformTextures>> {
+        None
+    }
     fn is_subpixel_rendering_supported(&self) -> bool;
 
     // macOS specific methods

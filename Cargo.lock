@@ -3286,6 +3286,7 @@ dependencies = [
  "etagere",
  "futures",
  "gpui",
+ "gpui_shader",
  "gpui_util",
  "image",
  "libc",
@@ -3438,6 +3439,14 @@ dependencies = [
  "gpui_web",
  "gpui_wgpu",
  "gpui_windows",
+]
+
+[[package]]
+name = "gpui_shader"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "naga 30.0.0",
 ]
 
 [[package]]

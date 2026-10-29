@@ -5354,6 +5354,103 @@ impl Window {
         });
     }
 
+    /// Paint a [`crate::ShaderProgram`] over `bounds` at the current z-index, reading
+    /// `params` and up to [`crate::MAX_SHADER_TEXTURES`] textures. The content mask and
+    /// element opacity apply as for any other primitive.
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    pub fn paint_shader(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        program: &crate::ShaderProgram,
+        params: &[u8],
+        textures: &[crate::TextureId],
+    ) -> Result<()> {
+        self.invalidator.debug_assert_paint();
+
+        anyhow::ensure!(
+            self.platform_window.textures().is_some(),
+            "shader quads are not supported by this renderer"
+        );
+        anyhow::ensure!(
+            params.len() <= crate::MAX_SHADER_PARAMS,
+            "shader params are {} bytes, more than {}",
+            params.len(),
+            crate::MAX_SHADER_PARAMS
+        );
+        anyhow::ensure!(
+            textures.len() <= crate::MAX_SHADER_TEXTURES,
+            "{} textures given, a shader quad reads at most {}",
+            textures.len(),
+            crate::MAX_SHADER_TEXTURES
+        );
+        if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
+            log::warn!("paint_shader called with empty bounds {bounds:?}");
+            return Ok(());
+        }
+
+        let mut slots = [None; crate::MAX_SHADER_TEXTURES];
+        for (slot, texture) in slots.iter_mut().zip(textures) {
+            *slot = Some(*texture);
+        }
+        let bounds = self.snap_bounds(bounds);
+        let content_mask = self.snapped_content_mask();
+        let opacity = self.element_opacity();
+        self.next_frame.scene.insert_primitive(crate::PaintShader {
+            order: 0,
+            bounds,
+            content_mask,
+            opacity,
+            program: program.clone(),
+            params: params.into(),
+            textures: slots,
+        });
+        Ok(())
+    }
+
+    /// Creates a texture that [`Self::paint_shader`] can read. Textures belong to this
+    /// window's renderer and cannot be used from another window.
+    pub fn create_texture(
+        &self,
+        size: Size<DevicePixels>,
+        format: crate::TextureFormat,
+    ) -> Result<crate::TextureId> {
+        self.platform_textures()?.create(size, format)
+    }
+
+    /// Replaces `rect` of a texture. `bytes` starts at the rect's top-left pixel and its
+    /// rows are `bytes_per_row` apart.
+    pub fn update_texture(
+        &self,
+        texture: crate::TextureId,
+        rect: Bounds<DevicePixels>,
+        bytes: &[u8],
+        bytes_per_row: usize,
+    ) -> Result<()> {
+        self.platform_textures()?
+            .update(texture, rect, bytes, bytes_per_row)
+    }
+
+    /// Releases a texture created with [`Self::create_texture`].
+    pub fn drop_texture(&self, texture: crate::TextureId) {
+        if let Some(textures) = self.platform_window.textures() {
+            textures.remove(texture);
+        }
+    }
+
+    /// Changes whenever this window's textures were lost and must be created again.
+    pub fn texture_generation(&self) -> Option<u64> {
+        self.platform_window
+            .textures()
+            .map(|textures| textures.generation())
+    }
+
+    fn platform_textures(&self) -> Result<Arc<dyn crate::PlatformTextures>> {
+        self.platform_window
+            .textures()
+            .context("textures are not supported by this renderer")
+    }
+
     /// Paint a wide-gamut image (premultiplied RGBA f16, extended sRGB) into the
     /// scene for the next frame at the current z-index. Unlike [`Self::paint_image`],
     /// color components outside [0, 1] are preserved through to the framebuffer on

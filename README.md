@@ -140,6 +140,15 @@ source (`zed-industries/zed`):
   [gpui-ce](https://github.com/gpui-ce/gpui-ce) #235 and #338 (Apache-2.0); the
   corner geometry derives from figma-squircle (MIT), see
   [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- Shader quads were added: `ShaderProgram` (one WGSL `shade` function),
+  `Window::paint_shader`, and application textures through
+  `Window::create_texture` / `update_texture` / `drop_texture` /
+  `texture_generation` and a `PlatformTextures` trait reached from
+  `PlatformWindow::textures`. A new `gpui_shader` crate joins the app function
+  with a vertex stage and the content-mask SDF, validates it with naga, and
+  translates it per backend. A new `PrimitiveBatch::Shaders` keeps draw order,
+  and the content mask and element opacity apply as for other primitives.
+  Implemented on Metal; DirectX and wgpu report shader quads as unsupported.
 
 These changes are documented in detail, with code, rationale, and open
 questions, in [docs/fork](docs/fork/README.md).
