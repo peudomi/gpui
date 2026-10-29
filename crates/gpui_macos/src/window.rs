@@ -160,6 +160,10 @@ unsafe fn build_classes() {
                 handle_view_event as extern "C" fn(_, Sel, *mut AnyObject),
             );
             decl.add_method(
+                sel!(tabletPoint:),
+                handle_view_event as extern "C" fn(_, Sel, *mut AnyObject),
+            );
+            decl.add_method(
                 sel!(magnifyWithEvent:),
                 handle_view_event as extern "C" fn(_, Sel, *mut AnyObject),
             );
@@ -703,6 +707,8 @@ struct MacWindowState {
     accesskit_adapter: Option<accesskit_macos::SubclassingAdapter>,
     // The parent window if this window is a sheet (Dialog kind)
     sheet_parent: Option<*mut AnyObject>,
+    pen: crate::pen::PenInput,
+    pen_monitor: Option<Retained<AnyObject>>,
 }
 
 impl MacWindowState {
@@ -971,12 +977,8 @@ impl MacWindow {
         marker: MainThreadMarker,
     ) -> Result<Self> {
         autoreleasepool(|_| unsafe {
-            let renderer = renderer::new_renderer(
-                renderer_context,
-                false,
-                use_display_p3,
-                use_extended_srgb,
-            )?;
+            let renderer =
+                renderer::new_renderer(renderer_context, false, use_display_p3, use_extended_srgb)?;
             let allows_automatic_window_tabbing = tabbing_identifier.is_some();
             if allows_automatic_window_tabbing {
                 let () = msg_send![class!(NSWindow), setAllowsAutomaticWindowTabbing: Bool::YES];
@@ -1016,7 +1018,8 @@ impl MacWindow {
                 WindowKind::Overlay => {
                     // Borderless, so the panel gets no titled-window corner
                     // rounding; overlay surfaces draw their own chrome.
-                    style_mask = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+                    style_mask =
+                        NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
                     msg_send![PANEL_CLASS, alloc]
                 }
                 WindowKind::Floating | WindowKind::Dialog => {
@@ -1132,8 +1135,12 @@ impl MacWindow {
                 closed: Arc::new(AtomicBool::new(false)),
                 accesskit_adapter: None,
                 sheet_parent: None,
+                pen: Default::default(),
+                pen_monitor: None,
             }));
             let mut window = Self(state, marker);
+            let pen_monitor = install_pen_monitor(&window.0);
+            window.0.lock().pen_monitor = pen_monitor;
 
             (*native_window)
                 .class()
@@ -2514,7 +2521,8 @@ impl PlatformWindow for MacWindow {
                 self.0.lock().synthetic_drag_counter += 1;
             }
             if started && matches!(payload, ExternalDragPayload::AppPrivate) {
-                let _: () = msg_send![session, setAnimatesToStartingPositionsOnCancelOrFail: Bool::NO];
+                let _: () =
+                    msg_send![session, setAnimatesToStartingPositionsOnCancelOrFail: Bool::NO];
             }
             log::debug!(
                 "start_external_drag completed: started={}, item_count={}",
@@ -2987,6 +2995,24 @@ extern "C" fn handle_view_event(this: &AnyObject, _: Sel, native_event: *mut Any
     let mut lock = window_state.as_ref().lock();
     let window_height = lock.content_size().height;
     let native_event_type: NSEventType = unsafe { msg_send![native_event, type] };
+    let pen_event = match unsafe { native_event.cast::<objc2_app_kit::NSEvent>().as_ref() } {
+        Some(_) if native_event_type == NSEventType::MouseExited => lock.pen.leave_window(),
+        Some(event) => lock.pen.event(event, window_height),
+        None => None,
+    };
+    if let Some(pen_event) = pen_event {
+        let exited = pen_event.phase == gpui::PenPhase::Exited;
+        drop(lock);
+        let claimed = dispatch_pen(&window_state, pen_event);
+        lock = window_state.as_ref().lock();
+        if claimed && !exited {
+            lock.cursor_visible.store(true, Ordering::Relaxed);
+            if native_event_type == NSEventType::LeftMouseDown {
+                lock.first_mouse = false;
+            }
+            return;
+        }
+    }
     match native_event_type {
         NSEventType::LeftMouseDown => {
             // AppKit owns `native_event` for the callback; retain it so the drag session can still
@@ -3137,6 +3163,38 @@ extern "C" fn handle_view_event(this: &AnyObject, _: Sel, native_event: *mut Any
             callback(event);
             window_state.lock().event_callback = Some(callback);
         }
+    }
+}
+
+fn dispatch_pen(window_state: &Arc<Mutex<MacWindowState>>, event: gpui::PenEvent) -> bool {
+    let Some(mut callback) = window_state.lock().event_callback.take() else {
+        return false;
+    };
+    let claimed = callback(PlatformInput::Pen(event)).default_prevented;
+    window_state.lock().event_callback = Some(callback);
+    claimed
+}
+
+fn install_pen_monitor(window_state: &Arc<Mutex<MacWindowState>>) -> Option<Retained<AnyObject>> {
+    let state = Arc::downgrade(window_state);
+    let handler = RcBlock::new(
+        move |event: NonNull<objc2_app_kit::NSEvent>| -> *mut objc2_app_kit::NSEvent {
+            if let Some(state) = state.upgrade()
+                && crate::pen::proximity(unsafe { event.as_ref() }) == Some(false)
+            {
+                let events = state.lock().pen.leave_proximity();
+                for event in events {
+                    dispatch_pen(&state, event);
+                }
+            }
+            event.as_ptr()
+        },
+    );
+    unsafe {
+        objc2_app_kit::NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+            objc2_app_kit::NSEventMask::TabletProximity,
+            &handler,
+        )
     }
 }
 
@@ -3448,7 +3506,7 @@ extern "C" fn window_should_close(this: &AnyObject, _: Sel, _: *mut AnyObject) -
 
 extern "C" fn close_window(this: &AnyObject, _: Sel) {
     unsafe {
-        let (close_callback, simple_fullscreen_state, move_loop_monitor) = {
+        let (close_callback, simple_fullscreen_state, move_loop_monitor, pen_monitor) = {
             let window_state = get_window_state(this);
             let mut lock = window_state.as_ref().lock();
             lock.closed.store(true, Ordering::Release);
@@ -3456,10 +3514,11 @@ extern "C" fn close_window(this: &AnyObject, _: Sel) {
                 lock.close_callback.take(),
                 lock.simple_fullscreen_state.take(),
                 lock.move_loop_monitor.take(),
+                lock.pen_monitor.take(),
             )
         };
 
-        if let Some(monitor) = move_loop_monitor {
+        for monitor in move_loop_monitor.into_iter().chain(pen_monitor) {
             objc2_app_kit::NSEvent::removeMonitor(&monitor);
         }
 

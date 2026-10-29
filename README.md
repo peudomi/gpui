@@ -120,8 +120,11 @@ source (`zed-industries/zed`):
   Windows backend reads Windows Ink (`WM_POINTER*`) and Wintab, chosen with
   `App::set_pen_source` (`PenSource::Auto` prefers Wintab), disables the system
   pen gestures, and drops the pointer and mouse messages of claimed strokes.
-  Wintab goes through the `wintab` crate. The pen example moved to
-  `crates/gpui/examples/pen` and runs on Windows and iOS.
+  Wintab goes through the `wintab` crate. The macOS backend reads mouse events
+  with tablet data and `NSEventTypeTabletPoint` events, tracks the pen in
+  proximity with a local event monitor, and turns mouse coalescing off while
+  the pen is in proximity. The pen example moved to `crates/gpui/examples/pen`
+  and runs on Windows, macOS and iOS.
 - On an auto-sized axis, absolute padding is snapped as a pair: the sum of both
   sides is rounded to device pixels and split by the authored ratio. Ported
   from [gpui-ce](https://github.com/gpui-ce/gpui-ce) #217 (Apache-2.0).
