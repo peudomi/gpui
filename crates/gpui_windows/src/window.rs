@@ -100,6 +100,7 @@ pub struct WindowsWindowState {
     hwnd: HWND,
     pub(crate) a11y: RefCell<Option<A11yState>>,
     last_drag_session_cursor: Cell<Option<(i32, i32)>>,
+    pub mouse_position: Cell<Point<Pixels>>,
 }
 
 pub(crate) struct WindowsWindowInner {
@@ -211,6 +212,7 @@ impl WindowsWindowState {
             pen: crate::pen::PenInput::new(hwnd, pen_settings),
             a11y: RefCell::new(None),
             last_drag_session_cursor: Cell::new(None),
+            mouse_position: Cell::new(Point::default()),
         })
     }
 
