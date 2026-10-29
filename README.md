@@ -122,6 +122,9 @@ source (`zed-industries/zed`):
   pen gestures, and drops the pointer and mouse messages of claimed strokes.
   Wintab goes through the `wintab` crate. The pen example moved to
   `crates/gpui/examples/pen` and runs on Windows and iOS.
+- On an auto-sized axis, absolute padding is snapped as a pair: the sum of both
+  sides is rounded to device pixels and split by the authored ratio. Ported
+  from [gpui-ce](https://github.com/gpui-ce/gpui-ce) #217 (Apache-2.0).
 
 These changes are documented in detail, with code, rationale, and open
 questions, in [docs/fork](docs/fork/README.md).
