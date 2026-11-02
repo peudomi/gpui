@@ -185,8 +185,8 @@ futures-concurrency = "7.7.1"
 futures-lite = "2"
 gh-workflow = { git = "https://github.com/zed-industries/gh-workflow", rev = "37f3c0575d379c218a9c455ee67585184e40d43f" }
 globset = "0.4"
-gpui-fast = { version = "0.1.10", features = ["windows-manifest-provided-by-host"] }
-gpui-fast-platform = { version = "0.1.10", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-fast = { version = "0.1.13", features = ["windows-manifest-provided-by-host"] }
+gpui-fast-platform = { version = "0.1.13", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 handlebars = "4.3"
 hdrhistogram = { version = "7", default-features = false }
 heapless = "0.9.2"
@@ -468,7 +468,7 @@ stacksafe = "1.0"
 streaming-iterator = "0.1"
 strsim = "0.11"
 strum = { version = "0.28", features = ["derive"] }
-sum-tree = { package = "gpui-pre-sum-tree", version = "=0.3.9" }
+sum-tree = { package = "gpui-pre-sum-tree", version = "=0.3.11" }
 swash = "0.2.6"
 syn = { version = "2.0", default-features = false, features = ["proc-macro"] }
 sys-locale = "0.3.1"
