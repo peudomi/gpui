@@ -4114,6 +4114,9 @@ impl BlockNode {
             .into_any_element()
         } else {
             div()
+                // Scopes the row ids to this table, as the scroll area's id
+                // does, so rows of two tables never share hover state.
+                .id(block_element_id("table", table.span, options.ix))
                 .w_full()
                 .overflow_hidden()
                 .refine_style(&frame)
@@ -4245,8 +4248,17 @@ impl BlockNode {
                             .min_w(px(column.min))
                             .max_w(px(column.max))
                             .overflow_hidden()
-                            .when(align == ColumnumnAlign::Center, |this| this.text_center())
-                            .when(align == ColumnumnAlign::Right, |this| this.text_right())
+                            // Align the content box, not its text: GPUI
+                            // paints `text_align` with an offset that
+                            // `TextLayout` hit-testing leaves out, so
+                            // aligned text could not be selected where it
+                            // shows.
+                            .when(align == ColumnumnAlign::Center, |this| {
+                                this.flex().flex_col().items_center()
+                            })
+                            .when(align == ColumnumnAlign::Right, |this| {
+                                this.flex().flex_col().items_end()
+                            })
                             .px_3()
                             .py(px(7.))
                             .refine_style(&style.table_cell())
@@ -4265,6 +4277,9 @@ impl BlockNode {
             }
             rows.push(
                 div()
+                    // GPUI keys hover state by element id, so each row needs
+                    // its own for its hover highlight to follow the pointer.
+                    .id(("row", row_ix))
                     .w_full()
                     .when(row_ix < row_count - 1, |this| this.border_b_1())
                     .border_color(style.border())
@@ -4284,6 +4299,11 @@ impl BlockNode {
                         this.when_some(bottom_left, |this, radius| this.rounded_bl(radius))
                             .when_some(bottom_right, |this, radius| this.rounded_br(radius))
                     })
+                    // Body rows only: the header keeps its own fill.
+                    .when_some(
+                        style.table_row_hover().filter(|_| row_ix > 0),
+                        |this, color| this.hover(|this| this.bg(color)),
+                    )
                     .children(cells)
                     .into_any_element(),
             );
