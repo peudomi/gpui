@@ -3,10 +3,11 @@ use std::ops::Range;
 
 use gpui::{
     AccessibleAction, Along, AnyElement, App, AppContext as _, Axis, Bounds, Context, Div,
-    DragMoveEvent, Empty, Entity, EntityId, EventEmitter, HitboxBehavior, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, Orientation, ParentElement, Pixels, Point, Render,
-    RenderOnce, Role, SharedString, StatefulInteractiveElement, StyleRefinement, Styled,
-    TouchDragEvent, TouchPhase, Window, div, prelude::FluentBuilder as _, px,
+    DragMoveEvent, Empty, Entity, EntityId, EventEmitter, FocusHandle, HitboxBehavior,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, Orientation, ParentElement,
+    Pixels, Point, Render, RenderOnce, Role, SharedString, StatefulInteractiveElement,
+    StyleRefinement, Styled, TouchDragEvent, TouchPhase, Window, div, prelude::FluentBuilder as _,
+    px,
 };
 
 use crate::{a11y_disabled::A11yDisabledExt as _, element_ext::ElementExt, geometry::AxisExt};
@@ -338,12 +339,14 @@ impl SliderState {
     fn update_thumb_pos(&mut self) {
         match self.value {
             SliderValue::Single(value) => {
-                let percentage = self.value_to_percentage(value.clamp(self.min, self.max));
+                let percentage = self.value_to_percentage(value.min(self.max).max(self.min));
                 self.percentage = 0.0..percentage;
             }
             SliderValue::Range(start, end) => {
-                let clamped_start = start.clamp(self.min, self.max);
-                let clamped_end = end.clamp(self.min, self.max);
+                // Not `clamp`: while a builder is between its `min` and `max`, `min`
+                // can stand above `max`.
+                let clamped_start = start.min(self.max).max(self.min);
+                let clamped_end = end.min(self.max).max(self.min);
                 self.percentage =
                     self.value_to_percentage(clamped_start)..self.value_to_percentage(clamped_end);
             }
@@ -379,15 +382,15 @@ impl SliderState {
         };
 
         let value = self.percentage_to_value(percentage);
-        let value = (value / step).round() * step;
+        let value = snap_to_step(value, self.min, self.max, step);
 
         if is_start {
-            self.percentage.start = percentage;
             self.value.set_start(value);
         } else {
-            self.percentage.end = percentage;
             self.value.set_end(value);
         }
+        // The thumb stands at the value, on its step, not at the pointer.
+        self.update_thumb_pos();
         cx.emit(SliderEvent::Change(self.value));
         cx.notify();
     }
@@ -417,6 +420,17 @@ impl SliderState {
     }
 }
 
+/// `value` on the nearest step counted from `min`, kept inside the range. A step that is
+/// not a positive finite number leaves the value continuous.
+fn snap_to_step(value: f32, min: f32, max: f32, step: f32) -> f32 {
+    if !(step > 0. && step.is_finite()) {
+        return value;
+    }
+    (min + ((value - min) / step).round() * step)
+        .min(max)
+        .max(min)
+}
+
 #[derive(Clone)]
 struct DragThumb((EntityId, bool));
 
@@ -444,6 +458,7 @@ pub struct Slider {
     axis: Axis,
     disabled: bool,
     accessibility_label: Option<SharedString>,
+    focus: Option<FocusHandle>,
     base: Div,
     children: Vec<AnyElement>,
 }
@@ -455,6 +470,7 @@ impl Slider {
             axis: Axis::Horizontal,
             disabled: false,
             accessibility_label: None,
+            focus: None,
             base: div(),
             children: Vec::new(),
         }
@@ -485,6 +501,13 @@ impl Slider {
         self.accessibility_label = Some(label.into());
         self
     }
+
+    /// Makes the slider's accessibility node itself focusable with `focus`,
+    /// so keyboard focus and assistive technology land on the slider.
+    pub fn track_focus(mut self, focus: &FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
+        self
+    }
 }
 
 impl ParentElement for Slider {
@@ -509,6 +532,7 @@ impl RenderOnce for Slider {
         self.base
             .id(("slider", entity_id))
             .test_support()
+            .when_some(self.focus, |this, focus| this.track_focus(&focus))
             .role(Role::Slider)
             .when_some(self.accessibility_label, |this, label| {
                 this.aria_label(label)
@@ -882,6 +906,8 @@ impl RenderOnce for SliderThumb {
                         },
                     ))
             })
+            // A caller can give a thumb a role of its own, as for a range's thumbs.
+            .a11y_disabled(self.disabled)
     }
 }
 
@@ -938,6 +964,169 @@ mod tests {
             .default_value(10.);
         let percentage = state.percentage().end;
         assert!((percentage - (1. / 3.)).abs() < 0.0001);
+    }
+
+    #[gpui::test]
+    fn a_disabled_thumb_marks_its_node_disabled(cx: &mut gpui::TestAppContext) {
+        struct Thumb {
+            state: Entity<SliderState>,
+            disabled: bool,
+        }
+
+        impl Render for Thumb {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                SliderThumb::new(&self.state)
+                    .role(Role::Slider)
+                    .disabled(self.disabled)
+            }
+        }
+
+        for disabled in [false, true] {
+            let (_, cx) = cx.add_window_view(|_, cx| Thumb {
+                state: cx.new(|_| SliderState::new()),
+                disabled,
+            });
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+                let thumb = crate::test_support::snapshots(window)
+                    .into_iter()
+                    .find(|node| node.role() == Some(Role::Slider))
+                    .expect("a thumb node");
+                assert_eq!(thumb.disabled(), disabled.then_some(true));
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn a_slider_takes_focus_on_its_own_node(cx: &mut gpui::TestAppContext) {
+        struct Focusable {
+            state: Entity<SliderState>,
+            focus: FocusHandle,
+        }
+
+        impl Render for Focusable {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                Slider::new(&self.state).track_focus(&self.focus)
+            }
+        }
+
+        let (view, cx) = cx.add_window_view(|_, cx| Focusable {
+            state: cx.new(|_| SliderState::new()),
+            focus: cx.focus_handle(),
+        });
+        cx.update(|window, cx| {
+            let focus = view.read(cx).focus.clone();
+            focus.focus(window, cx);
+            window.draw(cx).clear(cx);
+            let slider = crate::test_support::snapshots(window)
+                .into_iter()
+                .find(|node| node.role() == Some(Role::Slider))
+                .expect("a slider node");
+            assert_eq!(slider.focused(), Some(true));
+        });
+    }
+
+    #[test]
+    fn min_can_be_set_above_the_default_max_before_max() {
+        let state = SliderState::new().min(150.).max(200.).default_value(175.);
+        assert_eq!(state.value(), SliderValue::Single(175.));
+        assert_eq!(state.percentage(), 0.0..0.5);
+
+        let state = SliderState::new()
+            .default_value((160., 180.))
+            .min(150.)
+            .max(200.);
+        assert_eq!(state.percentage(), 0.2..0.6);
+    }
+
+    #[test]
+    fn dragging_snaps_from_min() {
+        // Steps count from `min`: 3 + 5k, not multiples of 5.
+        assert_eq!(snap_to_step(9.4, 3., 100., 5.), 8.);
+        assert_eq!(snap_to_step(11., 3., 100., 5.), 13.);
+        // A step past the end stays inside the range.
+        assert_eq!(snap_to_step(99., 3., 100., 5.), 98.);
+        assert_eq!(snap_to_step(100., 0., 99., 10.), 99.);
+        // A step that is not a positive finite number leaves the value continuous.
+        assert_eq!(snap_to_step(42.5, 0., 100., 0.), 42.5);
+        assert_eq!(snap_to_step(42.5, 0., 100., -5.), 42.5);
+        assert_eq!(snap_to_step(42.5, 0., 100., f32::NAN), 42.5);
+        assert_eq!(snap_to_step(42.5, 0., 100., f32::INFINITY), 42.5);
+    }
+
+    struct Holder(Entity<SliderState>);
+
+    impl Render for Holder {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// A slider of `state`, 100px wide, in a window.
+    fn sized(
+        state: SliderState,
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<SliderState>, &mut gpui::VisualTestContext) {
+        let (holder, cx) = cx.add_window_view(|_, cx| Holder(cx.new(|_| state)));
+        let state = holder.read_with(cx, |holder, _| holder.0.clone());
+        state.update(cx, |state, _| {
+            state.set_bounds(Bounds::new(
+                gpui::point(px(0.), px(0.)),
+                gpui::size(px(100.), px(10.)),
+            ));
+        });
+        (state, cx)
+    }
+
+    fn drag(state: &Entity<SliderState>, x: f32, start: bool, cx: &mut gpui::VisualTestContext) {
+        state.update_in(cx, |state, window, cx| {
+            let position = gpui::point(px(x), px(0.));
+            state.update_value_by_position(Axis::Horizontal, position, start, window, cx);
+        })
+    }
+
+    #[gpui::test]
+    fn a_drag_snaps_to_steps_counted_from_min(cx: &mut gpui::TestAppContext) {
+        let (state, cx) = sized(SliderState::new().min(3.).max(103.).step(5.), cx);
+        // 9 is between the steps 8 and 13, not next to 10.
+        drag(&state, 6., false, cx);
+        assert_eq!(
+            state.read_with(cx, |state, _| state.value()),
+            SliderValue::Single(8.)
+        );
+    }
+
+    #[gpui::test]
+    fn a_dropped_thumb_stands_at_its_value(cx: &mut gpui::TestAppContext) {
+        let (state, cx) = sized(SliderState::new().step(25.), cx);
+        drag(&state, 30., false, cx);
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.value(), SliderValue::Single(25.));
+            assert_eq!(state.percentage(), 0.0..0.25);
+        });
+
+        state.update_in(cx, |state, window, cx| {
+            state.set_value((25., 75.), window, cx);
+        });
+        drag(&state, 40., true, cx);
+        drag(&state, 60., false, cx);
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.value(), SliderValue::Range(50., 50.));
+            assert_eq!(state.percentage(), 0.5..0.5);
+        });
+    }
+
+    #[gpui::test]
+    fn a_zero_step_drags_continuously(cx: &mut gpui::TestAppContext) {
+        for step in [0., -5., f32::NAN, f32::INFINITY] {
+            let (state, cx) = sized(SliderState::new().step(step), cx);
+            drag(&state, 30., false, cx);
+            state.read_with(cx, |state, _| {
+                let value = state.value().end();
+                assert!((value - 30.).abs() < 1e-3, "step {step}: {value}");
+                assert!((state.percentage().end - 0.3).abs() < 1e-5, "step {step}");
+            });
+        }
     }
 
     #[test]
