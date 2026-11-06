@@ -446,7 +446,9 @@ impl WindowsWindowInner {
 
         let mut client_position = cursor;
         unsafe {
-            ScreenToClient(self.hwnd, &mut client_position).ok().log_err();
+            ScreenToClient(self.hwnd, &mut client_position)
+                .ok()
+                .log_err();
         }
         let position = logical_point(
             client_position.x as f32,
@@ -568,33 +570,32 @@ impl WindowsWindow {
                 .unwrap_or(""),
         );
 
-        let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp
-            || params.kind == WindowKind::Overlay
-        {
-            let mut dwexstyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
-            if params.kind == WindowKind::Overlay {
-                dwexstyle |= WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
-            }
-            (dwexstyle, WINDOW_STYLE(0x0))
-        } else {
-            let mut dwstyle = WS_SYSMENU;
-
-            if params.is_resizable {
-                dwstyle |= WS_THICKFRAME | WS_MAXIMIZEBOX;
-            }
-
-            if params.is_minimizable {
-                dwstyle |= WS_MINIMIZEBOX;
-            }
-            let dwexstyle = if params.kind == WindowKind::Dialog {
-                dwstyle |= WS_POPUP | WS_CAPTION;
-                WS_EX_DLGMODALFRAME
+        let (mut dwexstyle, dwstyle) =
+            if params.kind == WindowKind::PopUp || params.kind == WindowKind::Overlay {
+                let mut dwexstyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+                if params.kind == WindowKind::Overlay {
+                    dwexstyle |= WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
+                }
+                (dwexstyle, WINDOW_STYLE(0x0))
             } else {
-                WS_EX_APPWINDOW
-            };
+                let mut dwstyle = WS_SYSMENU;
 
-            (dwexstyle, dwstyle)
-        };
+                if params.is_resizable {
+                    dwstyle |= WS_THICKFRAME | WS_MAXIMIZEBOX;
+                }
+
+                if params.is_minimizable {
+                    dwstyle |= WS_MINIMIZEBOX;
+                }
+                let dwexstyle = if params.kind == WindowKind::Dialog {
+                    dwstyle |= WS_POPUP | WS_CAPTION;
+                    WS_EX_DLGMODALFRAME
+                } else {
+                    WS_EX_APPWINDOW
+                };
+
+                (dwexstyle, dwstyle)
+            };
         if !disable_direct_composition {
             dwexstyle |= WS_EX_NOREDIRECTIONBITMAP;
         }
@@ -878,7 +879,10 @@ impl PlatformWindow for WindowsWindow {
                 let target_y = (origin.y.as_f32() * scale_factor).round() as i32;
                 unsafe {
                     let mut window_rect = RECT::default();
-                    if GetWindowRect(this.hwnd, &mut window_rect).log_err().is_none() {
+                    if GetWindowRect(this.hwnd, &mut window_rect)
+                        .log_err()
+                        .is_none()
+                    {
                         return;
                     }
                     // `WM_MOVE` reports the client area but `SetWindowPos`
@@ -1323,6 +1327,10 @@ impl PlatformWindow for WindowsWindow {
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.state.renderer.borrow().sprite_atlas()
+    }
+
+    fn textures(&self) -> Option<Arc<dyn PlatformTextures>> {
+        self.state.renderer.borrow().textures()
     }
 
     fn get_raw_handle(&self) -> HWND {

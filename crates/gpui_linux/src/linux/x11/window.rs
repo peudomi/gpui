@@ -1499,9 +1499,10 @@ impl PlatformWindow for X11Window {
 
         check_reply(
             || format!("X11 ConfigureWindow failed. x: {}, y: {}", x, y),
-            self.0
-                .xcb
-                .configure_window(self.0.x_window, &xproto::ConfigureWindowAux::new().x(x).y(y)),
+            self.0.xcb.configure_window(
+                self.0.x_window,
+                &xproto::ConfigureWindowAux::new().x(x).y(y),
+            ),
         )
         .log_err();
         xcb_flush(&self.0.xcb);
@@ -1862,6 +1863,19 @@ impl PlatformWindow for X11Window {
             .expect("the renderer is only taken when the window is dropped")
             .sprite_atlas()
             .clone()
+    }
+
+    fn textures(&self) -> Option<Arc<dyn gpui::PlatformTextures>> {
+        let textures: Arc<dyn gpui::PlatformTextures> = self
+            .0
+            .state
+            .borrow()
+            .renderer
+            .as_ref()
+            .expect("the renderer is only taken when the window is dropped")
+            .textures()
+            .clone();
+        Some(textures)
     }
 
     fn show_window_menu(&self, position: Point<Pixels>) {

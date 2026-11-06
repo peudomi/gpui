@@ -15,6 +15,7 @@ doctest = false
 [features]
 default = []
 msl = ["naga/msl-out"]
+hlsl = ["naga/hlsl-out"]
 
 [dependencies]
 anyhow.workspace = true

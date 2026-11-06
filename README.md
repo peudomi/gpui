@@ -148,7 +148,12 @@ source (`zed-industries/zed`):
   with a vertex stage and the content-mask SDF, validates it with naga, and
   translates it per backend. A new `PrimitiveBatch::Shaders` keeps draw order,
   and the content mask and element opacity apply as for other primitives.
-  Implemented on Metal; DirectX and wgpu report shader quads as unsupported.
+  Implemented on Metal (naga MSL), Direct3D 11 (naga HLSL compiled with
+  `D3DCompile` as shader model 5.0; feature level 10_1 devices report shader
+  quads as unsupported), and wgpu (the joined WGSL as is; X11 and Wayland
+  windows). wgpu devices request `TEXTURE_FORMAT_16BIT_NORM` when the adapter
+  offers it, for `Rgba16Unorm` textures. The web backend still reports shader
+  quads as unsupported.
 
 These changes are documented in detail, with code, rationale, and open
 questions, in [docs/fork](docs/fork/README.md).

@@ -2098,6 +2098,17 @@ impl PlatformWindow for WaylandWindow {
             .clone()
     }
 
+    fn textures(&self) -> Option<Arc<dyn gpui::PlatformTextures>> {
+        let textures: Arc<dyn gpui::PlatformTextures> = self
+            .borrow()
+            .renderer
+            .as_ref()
+            .expect("the renderer is only taken when the window is dropped")
+            .textures()
+            .clone();
+        Some(textures)
+    }
+
     fn show_window_menu(&self, position: Point<Pixels>) {
         // xdg_shell kills the client if these arrive before the first configure.
         if !self.0.is_configured() {

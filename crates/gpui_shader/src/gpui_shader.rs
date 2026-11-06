@@ -27,7 +27,9 @@ pub struct ShaderQuadInstance {
 
 pub struct ShaderModule {
     source: String,
+    #[cfg_attr(not(any(feature = "msl", feature = "hlsl")), expect(dead_code))]
     module: naga::Module,
+    #[cfg_attr(not(any(feature = "msl", feature = "hlsl")), expect(dead_code))]
     info: ModuleInfo,
     params_size: u32,
 }
@@ -139,6 +141,73 @@ impl ShaderModule {
             fragment_entry: fragment_entry.context("missing fragment entry point")?,
         })
     }
+
+    #[cfg(feature = "hlsl")]
+    pub fn to_hlsl(&self) -> Result<Hlsl> {
+        use crate::hlsl;
+
+        let target = |register| hlsl::BindTarget {
+            register,
+            ..Default::default()
+        };
+        let mut binding_map = hlsl::BindingMap::new();
+        binding_map.insert(binding(0), target(hlsl::INSTANCE_REGISTER));
+        binding_map.insert(binding(1), target(hlsl::PARAMS_REGISTER));
+        for index in 0..TEXTURE_COUNT as u32 {
+            binding_map.insert(
+                binding(2 + index),
+                target(hlsl::FIRST_TEXTURE_REGISTER + index),
+            );
+        }
+        let options = hlsl::Options {
+            shader_model: hlsl::ShaderModel::V5_0,
+            binding_map,
+            fake_missing_bindings: false,
+            zero_initialize_workgroup_memory: false,
+            ..Default::default()
+        };
+        let pipeline_options = hlsl::PipelineOptions::default();
+        let mut source = String::new();
+        let reflection = hlsl::Writer::new(&mut source, &options, &pipeline_options)
+            .write(&self.module, &self.info, None)
+            .context("translating shader to HLSL")?;
+        let mut vertex_entry = None;
+        let mut fragment_entry = None;
+        for (entry_point, name) in self
+            .module
+            .entry_points
+            .iter()
+            .zip(reflection.entry_point_names)
+        {
+            let name = name.with_context(|| format!("translating {}", entry_point.name))?;
+            match entry_point.name.as_str() {
+                VERTEX_ENTRY => vertex_entry = Some(name),
+                FRAGMENT_ENTRY => fragment_entry = Some(name),
+                _ => {}
+            }
+        }
+        Ok(Hlsl {
+            source,
+            vertex_entry: vertex_entry.context("missing vertex entry point")?,
+            fragment_entry: fragment_entry.context("missing fragment entry point")?,
+        })
+    }
+}
+
+#[cfg(feature = "hlsl")]
+pub struct Hlsl {
+    pub source: String,
+    pub vertex_entry: String,
+    pub fragment_entry: String,
+}
+
+#[cfg(feature = "hlsl")]
+pub mod hlsl {
+    pub use naga::back::hlsl::*;
+
+    pub const INSTANCE_REGISTER: u32 = 2;
+    pub const PARAMS_REGISTER: u32 = 3;
+    pub const FIRST_TEXTURE_REGISTER: u32 = 2;
 }
 
 #[cfg(feature = "msl")]
@@ -156,6 +225,7 @@ pub mod msl {
     pub const PARAMS_BUFFER: Slot = 1;
 }
 
+#[cfg_attr(not(any(feature = "msl", feature = "hlsl")), expect(dead_code))]
 fn binding(binding: u32) -> ResourceBinding {
     ResourceBinding { group: 0, binding }
 }
@@ -260,5 +330,18 @@ mod tests {
         let msl = ShaderModule::new(source).unwrap().to_msl().unwrap();
         assert!(msl.source.contains("[[buffer(1)]]"), "{}", msl.source);
         assert!(msl.source.contains("[[texture(0)]]"), "{}", msl.source);
+    }
+
+    #[cfg(feature = "hlsl")]
+    #[test]
+    fn translates_to_hlsl() {
+        let source = "struct ShaderParams { tint: vec4<f32> }\n\
+             fn shade(input: ShadeInput) -> vec4<f32> {\n\
+                 let texel = textureLoad(t3, vec2<i32>(input.local), 0);\n\
+                 return texel * params.tint;\n\
+             }";
+        let hlsl = ShaderModule::new(source).unwrap().to_hlsl().unwrap();
+        assert!(hlsl.source.contains("register(b3)"), "{}", hlsl.source);
+        assert!(hlsl.source.contains("register(t5)"), "{}", hlsl.source);
     }
 }

@@ -15,6 +15,7 @@ mod keyboard;
 mod output_color;
 mod pen;
 mod platform;
+mod shader_quad;
 mod system_notifications;
 mod system_settings;
 mod util;

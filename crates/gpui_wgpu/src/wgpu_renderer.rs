@@ -1,3 +1,4 @@
+use crate::shader_quad::{ShaderQuads, WgpuTextures};
 use crate::{CompositorGpuHint, DeviceErrorState, WgpuAtlas, WgpuContext};
 use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
@@ -224,6 +225,7 @@ impl WgpuResources {
 struct WgpuRendererCore {
     resources: WgpuResources,
     atlas: Arc<WgpuAtlas>,
+    shader_quads: ShaderQuads,
     path_globals_offset: u64,
     gamma_offset: u64,
     instance_data_capacity: u64,
@@ -264,6 +266,7 @@ pub struct WgpuRenderer {
     state: RendererState,
     surface_config: wgpu::SurfaceConfiguration,
     atlas: Arc<WgpuAtlas>,
+    textures: Arc<WgpuTextures>,
     transparent_alpha_mode: wgpu::CompositeAlphaMode,
     opaque_alpha_mode: wgpu::CompositeAlphaMode,
     max_texture_size: u32,
@@ -353,6 +356,7 @@ impl WgpuRenderer {
         };
 
         let atlas = Arc::new(WgpuAtlas::from_context(context));
+        let textures = Arc::new(WgpuTextures::from_context(context));
 
         Self::new_internal(
             Some(Rc::clone(&gpu_context)),
@@ -362,6 +366,7 @@ impl WgpuRenderer {
             surface_configured,
             compositor_gpu,
             atlas,
+            textures,
         )
     }
 
@@ -386,7 +391,8 @@ impl WgpuRenderer {
         config: WgpuSurfaceConfig,
     ) -> anyhow::Result<Self> {
         let atlas = Arc::new(WgpuAtlas::from_context(context));
-        Self::new_internal(None, context, surface, config, false, None, atlas)
+        let textures = Arc::new(WgpuTextures::from_context(context));
+        Self::new_internal(None, context, surface, config, false, None, atlas, textures)
     }
 
     /// Returns the surface configuration for `config`, along with the transparent and
@@ -504,6 +510,7 @@ impl WgpuRenderer {
         surface_configured: bool,
         compositor_gpu: Option<CompositorGpuHint>,
         atlas: Arc<WgpuAtlas>,
+        textures: Arc<WgpuTextures>,
     ) -> anyhow::Result<Self> {
         let (surface_config, transparent_alpha_mode, opaque_alpha_mode) =
             Self::surface_configuration(&surface, &context.adapter, &context.device, &config)?;
@@ -516,7 +523,13 @@ impl WgpuRenderer {
         let surface_format = surface_config.format;
         let alpha_mode = surface_config.alpha_mode;
         let max_texture_size = context.device.limits().max_texture_dimension_2d;
-        let core = WgpuRendererCore::new(context, atlas.clone(), surface_format, alpha_mode);
+        let core = WgpuRendererCore::new(
+            context,
+            atlas.clone(),
+            textures.clone(),
+            surface_format,
+            alpha_mode,
+        );
 
         Ok(Self {
             context: gpu_context,
@@ -524,6 +537,7 @@ impl WgpuRenderer {
             state: RendererState::Ready { surface, core },
             surface_config,
             atlas,
+            textures,
             transparent_alpha_mode,
             opaque_alpha_mode,
             max_texture_size,
@@ -1142,6 +1156,10 @@ impl WgpuRenderer {
         &self.atlas
     }
 
+    pub fn textures(&self) -> &Arc<WgpuTextures> {
+        &self.textures
+    }
+
     pub fn supports_dual_source_blending(&self) -> bool {
         self.core().is_some_and(|core| core.dual_source_blending)
     }
@@ -1258,6 +1276,7 @@ impl WgpuRendererCore {
     fn new(
         context: &WgpuContext,
         atlas: Arc<WgpuAtlas>,
+        textures: Arc<WgpuTextures>,
         target_format: wgpu::TextureFormat,
         alpha_mode: wgpu::CompositeAlphaMode,
     ) -> Self {
@@ -1378,6 +1397,7 @@ impl WgpuRendererCore {
             ],
         });
         let max_texture_size = device.limits().max_texture_dimension_2d;
+        let shader_quads = ShaderQuads::new(textures, &device, &queue, target_format);
 
         Self {
             resources: WgpuResources {
@@ -1397,6 +1417,7 @@ impl WgpuRendererCore {
                 path_msaa_view: None,
             },
             atlas,
+            shader_quads,
             path_globals_offset,
             gamma_offset,
             instance_data_capacity,
@@ -1510,7 +1531,7 @@ impl WgpuRendererCore {
             bytemuck::bytes_of(&gamma_params),
         );
 
-        self.record_frame(scene, target_view, clear_color)
+        self.record_frame(scene, target_view, size, clear_color)
             .inspect_err(|_| {
                 // Queue writes are staged before encoding; flush them even if the frame fails.
                 self.resources.queue.submit(std::iter::empty());
@@ -1521,6 +1542,7 @@ impl WgpuRendererCore {
         &mut self,
         scene: &Scene,
         frame_view: &wgpu::TextureView,
+        viewport_size: Size<DevicePixels>,
         clear_color: wgpu::Color,
     ) -> Result<wgpu::SubmissionIndex> {
         let mut instance_offset = 0;
@@ -1539,6 +1561,7 @@ impl WgpuRendererCore {
                 )
             })?;
         self.prepare_texture_bind_groups(scene);
+        self.shader_quads.prepare(&scene.shaders, viewport_size);
 
         let mut encoder =
             self.resources()
@@ -1654,7 +1677,7 @@ impl WgpuRendererCore {
                     // Surfaces are macOS-only for video playback and are not
                     // implemented by the WGPU renderer.
                     PrimitiveBatch::Surfaces(_surfaces) => {}
-                    PrimitiveBatch::Shaders(_) => {}
+                    PrimitiveBatch::Shaders(range) => self.shader_quads.draw(range, &mut pass),
                 }
             }
         }
@@ -2313,6 +2336,7 @@ impl WgpuRenderer {
 
         self.state = RendererState::Released;
         self.atlas.handle_device_lost(context);
+        self.textures.handle_device_lost(context);
 
         let is_bgr = self.is_bgr;
         *self = Self::new_internal(
@@ -2323,6 +2347,7 @@ impl WgpuRenderer {
             needs_new_context,
             self.compositor_gpu,
             self.atlas.clone(),
+            self.textures.clone(),
         )?;
         self.set_subpixel_layout(is_bgr);
 
@@ -2360,6 +2385,7 @@ impl HeadlessRenderTarget {
 pub struct WgpuHeadlessRenderer {
     context: WgpuContext,
     core: WgpuRendererCore,
+    textures: Arc<WgpuTextures>,
     render_target: Option<HeadlessRenderTarget>,
     observed_error_generation: u64,
 }
@@ -2375,9 +2401,11 @@ impl WgpuHeadlessRenderer {
         // here on, including any while this renderer builds its pipelines.
         let observed_error_generation = context.errors().current_generation();
         let atlas = Arc::new(WgpuAtlas::from_context(&context));
+        let textures = Arc::new(WgpuTextures::from_context(&context));
         let core = WgpuRendererCore::new(
             &context,
             atlas,
+            textures.clone(),
             target_format,
             wgpu::CompositeAlphaMode::Opaque,
         );
@@ -2385,6 +2413,7 @@ impl WgpuHeadlessRenderer {
         Ok(Self {
             context,
             core,
+            textures,
             render_target: None,
             observed_error_generation,
         })
@@ -2593,6 +2622,16 @@ impl gpui::PlatformHeadlessRenderer for WgpuHeadlessRenderer {
 
     fn sprite_atlas(&self) -> Arc<dyn gpui::PlatformAtlas> {
         self.core.atlas.clone()
+    }
+}
+
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(test, feature = "bench-support", feature = "test-support")
+))]
+impl WgpuHeadlessRenderer {
+    pub fn textures(&self) -> &Arc<WgpuTextures> {
+        &self.textures
     }
 }
 

@@ -21,6 +21,7 @@ use windows::{
 
 use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
 use crate::output_color::{self, OutputColorMode};
+use crate::shader_quad::ShaderQuads;
 use crate::*;
 use gpui::*;
 use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
@@ -57,6 +58,7 @@ pub(crate) struct DirectXRenderer {
     resources: Option<DirectXResources>,
     globals: DirectXGlobalElements,
     pipelines: DirectXRenderPipelines,
+    shader_quads: ShaderQuads,
     direct_composition: Option<DirectComposition>,
     font_info: &'static FontInfo,
 
@@ -210,6 +212,8 @@ impl DirectXRenderer {
             .context("Creating DirectX global elements")?;
         let pipelines = DirectXRenderPipelines::new(&devices.device)
             .context("Creating DirectX render pipelines")?;
+        let shader_quads = ShaderQuads::new(&devices.device, &devices.device_context)
+            .context("Creating shader quads")?;
 
         let direct_composition = if disable_direct_composition {
             None
@@ -229,6 +233,7 @@ impl DirectXRenderer {
             resources: Some(resources),
             globals,
             pipelines,
+            shader_quads,
             direct_composition,
             font_info: Self::get_font_info(),
             width: 1,
@@ -242,6 +247,10 @@ impl DirectXRenderer {
 
     pub(crate) fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
+    }
+
+    pub(crate) fn textures(&self) -> Option<Arc<dyn PlatformTextures>> {
+        self.shader_quads.textures()
     }
 
     fn pre_draw(&self, clear_color: &[f32; 4]) -> Result<()> {
@@ -362,6 +371,9 @@ impl DirectXRenderer {
 
         self.atlas
             .handle_device_lost(&devices.device, &devices.device_context);
+        self.shader_quads
+            .handle_device_lost(&devices.device, &devices.device_context)
+            .context("Recreating shader quads")?;
 
         unsafe {
             devices
@@ -437,7 +449,7 @@ impl DirectXRenderer {
                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
                 }
                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
-                PrimitiveBatch::Shaders(_) => Ok(()),
+                PrimitiveBatch::Shaders(range) => self.draw_shaders(&scene.shaders[range]),
             }
             .with_context(|| {
                 format!(
@@ -555,8 +567,7 @@ impl DirectXRenderer {
         if mode == self.output_color_mode {
             return Ok(());
         }
-        let format_changed =
-            swap_chain_format(mode) != swap_chain_format(self.output_color_mode);
+        let format_changed = swap_chain_format(mode) != swap_chain_format(self.output_color_mode);
         self.output_color_mode = mode;
         log::info!("directx output color mode: {mode:?}");
         if format_changed {
@@ -617,8 +628,12 @@ impl DirectXRenderer {
             // Unbind the scene texture so it can be bound as the render target
             // again on the next frame.
             let no_srv: [Option<ID3D11ShaderResourceView>; 1] = [None];
-            devices.device_context.VSSetShaderResources(0, Some(&no_srv));
-            devices.device_context.PSSetShaderResources(0, Some(&no_srv));
+            devices
+                .device_context
+                .VSSetShaderResources(0, Some(&no_srv));
+            devices
+                .device_context
+                .PSSetShaderResources(0, Some(&no_srv));
         }
         Ok(())
     }
@@ -957,6 +972,21 @@ impl DirectXRenderer {
             slice::from_ref(&self.globals.sampler),
             start as u32,
             len as u32,
+        )
+    }
+
+    fn draw_shaders(&mut self, shaders: &[PaintShader]) -> Result<()> {
+        let devices = self.devices.as_ref().context("devices missing")?;
+        let viewport = &self
+            .resources
+            .as_ref()
+            .context("resources missing")?
+            .viewport;
+        self.shader_quads.draw(
+            shaders,
+            &devices.device,
+            &devices.device_context,
+            [viewport.Width, viewport.Height],
         )
     }
 
