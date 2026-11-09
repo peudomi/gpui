@@ -9,11 +9,10 @@ use crate::{
 };
 use gpui::{
     Anchor, App, Axis, Background, BorderStyle, Bounds, ContentMask, CursorStyle, Edges, Element,
-    ElementId, EntityId, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
-    IntoElement, IsZero, LayoutId, ListState, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PaintQuad, Pixels, Point, Position, ScrollEvent, ScrollHandle, Size, Style, TouchDragEvent,
-    TouchPhase, UniformListScrollHandle, Window, fill, point, prelude::FluentBuilder, px, relative,
-    size,
+    ElementId, EntityId, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IsZero,
+    LayoutId, ListState, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
+    Position, ScrollEvent, ScrollHandle, Size, Style, TouchDragEvent, TouchPhase,
+    UniformListScrollHandle, Window, fill, point, prelude::FluentBuilder, px, relative, size,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1162,14 +1161,6 @@ impl Scrollbar {
             ),
         );
         (thumb, track, border, width, inset, radius, min_length)
-    }
-}
-
-impl IntoElement for Scrollbar {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
     }
 }
 
