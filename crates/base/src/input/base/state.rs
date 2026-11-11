@@ -557,7 +557,7 @@ pub struct InputBaseState<M: InputModeKind> {
     projected_editor_style: InputEditorStyle,
     pub(super) fold_placeholder_renderer: Option<FoldPlaceholderRenderer>,
     pub(super) fold_background: Option<Hsla>,
-    accessibility: Option<InputAccessibility>,
+    pub(super) accessibility: Option<InputAccessibility>,
     /// What paints in place of Base's editor scrollbar, when a consumer
     /// supplies its own.
     pub(super) scrollbar_renderer: Option<crate::input::EditorScrollbarRenderer>,
@@ -3232,6 +3232,11 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     pub(super) fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        if self.selections.iter().all(|sel| sel.is_empty()) {
+            // Nothing selected here: let Root copy the window's text selection.
+            cx.propagate();
+            return;
+        }
         if !self.is_copyable() {
             return;
         }
@@ -5173,6 +5178,7 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
             .projected_editor_style
             .resolved(&crate::Theme::global(cx).tokens);
         let entity = cx.entity();
+        let text_runs = self.accessibility_text_runs(window);
         if self._pending_update {
             self.mode.update_highlighter::<M>(
                 super::mode::HighlighterUpdate {
@@ -5212,6 +5218,9 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                             && (window.is_a11y_active() || cfg!(feature = "test-support")),
                         |this| this.aria_value(self.text.to_string()),
                     )
+                    .when_some(text_runs, |this, runs| {
+                        this.a11y_synthetic_children(move |builder| runs.push(builder))
+                    })
                     .on_a11y_action(gpui::AccessibleAction::Focus, {
                         let entity = entity.clone();
                         move |_, window, cx| {
