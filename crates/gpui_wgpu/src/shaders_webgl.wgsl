@@ -221,16 +221,6 @@ fn load_shadow(instance_id: u32) -> Shadow {
     );
 }
 
-<<<<<<< HEAD
-fn load_path_vertex(vertex_id: u32) -> PathRasterizationVertex {
-    var cursor = instance_cursor(vertex_id * 36u);
-    return PathRasterizationVertex(
-        read_vec2_f32(&cursor),
-        read_vec2_f32(&cursor),
-        read_background(&cursor),
-        read_bounds(&cursor),
-        read_content_mask(&cursor),
-=======
 fn load_path_tile(instance_id: u32) -> PathTile {
     var cursor = instance_cursor(instance_id * 14u);
     return PathTile(
@@ -243,7 +233,6 @@ fn load_path_tile(instance_id: u32) -> PathTile {
         read_vec2_f32(&cursor),
         read_vec2_f32(&cursor),
         read_vec2_f32(&cursor),
->>>>>>> upstream/main
     );
 }
 
@@ -261,10 +250,10 @@ fn load_path_curve(index: u32) -> PathCurve {
 }
 
 fn load_path_paint(index: u32) -> PathPaint {
-    var cursor = instance_cursor((globals.path_paint_base + index) * 28u);
+    var cursor = instance_cursor((globals.path_paint_base + index) * 34u);
     return PathPaint(
         read_bounds(&cursor),
-        read_bounds(&cursor),
+        read_content_mask(&cursor),
         read_background(&cursor),
         read_word(&cursor),
         read_word(&cursor),

@@ -1,4 +1,5 @@
 use crate::WgpuContext;
+use crate::wgpu_renderer::DEPTH_FORMAT;
 use anyhow::{Context as _, Result};
 use collections::FxHashMap;
 use gpui::{
@@ -480,7 +481,13 @@ fn build_pipeline(
             topology: wgpu::PrimitiveTopology::TriangleStrip,
             ..Default::default()
         },
-        depth_stencil: None,
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Greater),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: &shader,

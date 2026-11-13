@@ -4,13 +4,8 @@ use anyhow::{Context as _, Result};
 use bytemuck::{Pod, Zeroable};
 use collections::FxHashMap;
 use gpui::{
-<<<<<<< HEAD
-    AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, GpuSpecs, Path, Point,
-    PrimitiveBatch, ScaledPixels, Scene, Size, get_gamma_correction_ratios,
-=======
     AtlasTextureId, Bounds, DevicePixels, GpuSpecs, PaintedPath, PrimitiveBatch, ScaledPixels,
     Scene, Size, get_gamma_correction_ratios, quad_depth, quad_depth_scale,
->>>>>>> upstream/main
 };
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
@@ -73,7 +68,7 @@ struct GlobalParams {
     pad: u32,
 }
 
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 struct DepthTexture {
     texture: wgpu::Texture,
@@ -122,25 +117,6 @@ struct GammaParams {
     _pad: u32,
 }
 
-<<<<<<< HEAD
-#[derive(Clone, Debug)]
-#[repr(C)]
-struct PathSprite {
-    bounds: Bounds<ScaledPixels>,
-}
-
-#[derive(Clone, Debug)]
-#[repr(C)]
-struct PathRasterizationVertex {
-    xy_position: Point<ScaledPixels>,
-    st_position: Point<f32>,
-    color: Background,
-    bounds: Bounds<ScaledPixels>,
-    content_mask: ContentMask<ScaledPixels>,
-}
-
-=======
->>>>>>> upstream/main
 pub struct WgpuSurfaceConfig {
     pub size: Size<DevicePixels>,
     pub transparent: bool,
@@ -246,11 +222,7 @@ struct CachedTextureBindGroup {
 struct WgpuRendererCore {
     resources: WgpuResources,
     atlas: Arc<WgpuAtlas>,
-<<<<<<< HEAD
     shader_quads: ShaderQuads,
-    path_globals_offset: u64,
-=======
->>>>>>> upstream/main
     gamma_offset: u64,
     instance_data_capacity: u64,
     max_instance_data_size: u64,
@@ -1346,11 +1318,7 @@ impl WgpuRendererCore {
                 instance_data,
             },
             atlas,
-<<<<<<< HEAD
             shader_quads,
-            path_globals_offset,
-=======
->>>>>>> upstream/main
             gamma_offset,
             instance_data_capacity,
             max_instance_data_size,
@@ -1438,11 +1406,7 @@ impl WgpuRendererCore {
         &mut self,
         scene: &Scene,
         frame_view: &wgpu::TextureView,
-<<<<<<< HEAD
-        viewport_size: Size<DevicePixels>,
-=======
         size: Size<DevicePixels>,
->>>>>>> upstream/main
         clear_color: wgpu::Color,
     ) -> Result<wgpu::SubmissionIndex> {
         let mut instance_offset = 0;
@@ -1476,9 +1440,7 @@ impl WgpuRendererCore {
             bytemuck::bytes_of(&globals),
         );
         self.prepare_texture_bind_groups(scene);
-<<<<<<< HEAD
-        self.shader_quads.prepare(&scene.shaders, viewport_size);
-=======
+        self.shader_quads.prepare(&scene.shaders, size);
         self.ensure_depth_texture(size);
         let depth_view = &self
             .depth_texture
@@ -1489,7 +1451,6 @@ impl WgpuRendererCore {
         // indices in `scene.quads` on both transports, which the quad depths
         // rely on.
         debug_assert_eq!(instance_bindings.quads.first_instance, 0);
->>>>>>> upstream/main
 
         let mut encoder =
             self.resources()
@@ -1621,7 +1582,10 @@ impl WgpuRendererCore {
                     // Surfaces are macOS-only for video playback and are not
                     // implemented by the WGPU renderer.
                     PrimitiveBatch::Surfaces(_surfaces) => {}
-                    PrimitiveBatch::Shaders(range) => self.shader_quads.draw(range, &mut pass),
+                    PrimitiveBatch::Shaders(range) => {
+                        self.shader_quads.draw(range, &mut pass);
+                        pass.set_bind_group(0, &self.resources().globals_bind_group, &[]);
+                    }
                 }
             }
         }
@@ -1833,134 +1797,9 @@ impl WgpuRendererCore {
         }
     }
 
-<<<<<<< HEAD
-    fn draw_paths_from_intermediate(
-        &mut self,
-        paths: &[Path<ScaledPixels>],
-        instance_offset: &mut u64,
-        pass: &mut wgpu::RenderPass<'_>,
-    ) -> Result<()> {
-        let first_path = &paths[0];
-        let sprites: Vec<PathSprite> = if paths.last().map(|p| &p.order) == Some(&first_path.order)
-        {
-            paths
-                .iter()
-                .map(|p| PathSprite {
-                    bounds: p.clipped_bounds(),
-                })
-                .collect()
-        } else {
-            let mut bounds = first_path.clipped_bounds();
-            for path in paths.iter().skip(1) {
-                bounds = bounds.union(&path.clipped_bounds());
-            }
-            vec![PathSprite { bounds }]
-        };
-
-        let Some(path_intermediate_view) = self.resources().path_intermediate_view.clone() else {
-            return Ok(());
-        };
-        let instances =
-            self.write_instance_binding("path_sprites_bind_group", instance_offset, &sprites)?;
-        let texture = self.create_texture_bind_group(
-            "path_intermediate_texture_bind_group",
-            &path_intermediate_view,
-        );
-        let resources = self.resources();
-        pass.set_pipeline(&resources.pipelines.paths);
-        pass.set_bind_group(0, &resources.globals_bind_group, &[]);
-        pass.set_bind_group(1, &instances.bind_group, &[]);
-        pass.set_bind_group(2, &texture, &[]);
-        pass.draw(
-            0..4,
-            instances.first_instance..instances.first_instance + sprites.len() as u32,
-        );
-        Ok(())
-    }
-
-    fn draw_paths_to_intermediate(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        paths: &[Path<ScaledPixels>],
-        instance_offset: &mut u64,
-    ) -> Result<bool> {
-        let mut vertices = Vec::new();
-        for path in paths {
-            let bounds = path.clipped_bounds();
-            vertices.extend(path.vertices.iter().map(|v| PathRasterizationVertex {
-                xy_position: v.xy_position,
-                st_position: v.st_position,
-                color: path.color,
-                bounds,
-                content_mask: path.content_mask,
-            }));
-        }
-
-        if vertices.is_empty() {
-            return Ok(false);
-        }
-
-        let vertex_binding = self.write_instance_binding(
-            "path_rasterization_bind_group",
-            instance_offset,
-            &vertices,
-        )?;
-
-        let resources = self.resources();
-        let Some(path_intermediate_view) = resources.path_intermediate_view.as_ref() else {
-            return Ok(false);
-        };
-
-        let (target_view, resolve_target) = if let Some(ref msaa_view) = resources.path_msaa_view {
-            (msaa_view, Some(path_intermediate_view))
-        } else {
-            (path_intermediate_view, None)
-        };
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("path_rasterization_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target_view,
-                    resolve_target,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                ..Default::default()
-            });
-
-            pass.set_pipeline(&resources.pipelines.path_rasterization);
-            pass.set_bind_group(0, &resources.path_globals_bind_group, &[]);
-            pass.set_bind_group(1, &vertex_binding.bind_group, &[]);
-            // The path rasterization shader loads records by vertex index
-            // rather than instance index, so the allocation's base shifts the
-            // vertex range here.
-            pass.draw(
-                vertex_binding.first_instance
-                    ..vertex_binding.first_instance + vertices.len() as u32,
-                0..1,
-            );
-        }
-
-        Ok(true)
-    }
-
-    fn write_instance_binding<T>(
-        &mut self,
-        label: &str,
-        instance_offset: &mut u64,
-        instances: &[T],
-    ) -> Result<InstanceBinding> {
-        let data = unsafe { Self::instance_bytes(instances) };
-=======
     /// The alignment of an allocation of `byte_len` bytes of `stride`-sized
     /// records, and the bytes it takes up from that aligned offset.
     fn instance_allocation_layout(&self, stride: u64, byte_len: u64) -> (u64, u64) {
->>>>>>> upstream/main
         // wgpu rejects zero-sized bindings, so empty primitive arrays still
         // reserve the 16-byte minimum.
         let size = byte_len.max(16);
@@ -2877,6 +2716,30 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn headless_renderer_rounds_content_mask_corners() -> anyhow::Result<()> {
+        let mut renderer = WgpuHeadlessRenderer::new()?;
+        let mut scene = Scene::default();
+        for corner_smoothing in [0.0, 1.0] {
+            let x = if corner_smoothing == 0.0 { 0.0 } else { 32.0 };
+            let mut quad = solid_quad(x, 0.0, 32.0, 32.0, gpui::red());
+            quad.content_mask.corner_radii = Corners::all(16.0.into());
+            quad.content_mask.corner_smoothing = corner_smoothing;
+            scene.insert_primitive(quad);
+        }
+        scene.finish();
+
+        let image = renderer.render_scene_to_image(&scene, device_size(64, 32))?;
+        for x in [0, 32] {
+            assert_pixel(&image, x + 1, 1, BLACK);
+            assert_pixel(&image, x + 30, 30, BLACK);
+            assert_pixel(&image, x + 16, 16, RED);
+            assert_pixel(&image, x + 16, 1, RED);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn headless_renderer_captures_each_requested_size() -> anyhow::Result<()> {
         let mut renderer = WgpuHeadlessRenderer::new()?;
         let mut scene = Scene::default();
@@ -2982,26 +2845,15 @@ mod tests {
 
     #[test]
     fn webgl_record_sizes_match_shader_word_strides() {
-<<<<<<< HEAD
         assert_eq!(std::mem::size_of::<Quad>(), 48 * 4);
         assert_eq!(std::mem::size_of::<Shadow>(), 34 * 4);
-        assert_eq!(std::mem::size_of::<PathRasterizationVertex>(), 36 * 4);
-        assert_eq!(std::mem::size_of::<PathSprite>(), 4 * 4);
+        assert_eq!(std::mem::size_of::<PathTile>(), 14 * 4);
+        assert_eq!(std::mem::size_of::<PathCurve>(), 10 * 4);
+        assert_eq!(std::mem::size_of::<PathPaint>(), 34 * 4);
         assert_eq!(std::mem::size_of::<Underline>(), 22 * 4);
         assert_eq!(std::mem::size_of::<MonochromeSprite>(), 34 * 4);
         assert_eq!(std::mem::size_of::<SubpixelSprite>(), 34 * 4);
         assert_eq!(std::mem::size_of::<PolychromeSprite>(), 30 * 4);
-=======
-        assert_eq!(std::mem::size_of::<Quad>(), 40 * 4);
-        assert_eq!(std::mem::size_of::<Shadow>(), 28 * 4);
-        assert_eq!(std::mem::size_of::<PathTile>(), 14 * 4);
-        assert_eq!(std::mem::size_of::<PathCurve>(), 10 * 4);
-        assert_eq!(std::mem::size_of::<PathPaint>(), 28 * 4);
-        assert_eq!(std::mem::size_of::<Underline>(), 16 * 4);
-        assert_eq!(std::mem::size_of::<MonochromeSprite>(), 28 * 4);
-        assert_eq!(std::mem::size_of::<SubpixelSprite>(), 28 * 4);
-        assert_eq!(std::mem::size_of::<PolychromeSprite>(), 24 * 4);
->>>>>>> upstream/main
     }
 
     #[test]
