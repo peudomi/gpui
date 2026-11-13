@@ -3335,7 +3335,6 @@ impl<M: InputModeKind> InputBaseState<M> {
         if !self.is_multi_line() {
             new_text = new_text.replace('\n', "");
             self.replace_text_in_range_silent(None, &new_text, window, cx);
-            self.scroll_to(self.cursor(), None, cx);
             return;
         }
 
@@ -4688,9 +4687,17 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             .map(|range| self.range_to_utf16(&range.into()))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.ime_marked_range = None;
         self.undo_manager.commit_transaction();
+        // Unmarking keeps the preedit as committed text, which marked edits
+        // never reported. Android keyboards compose every word and often end
+        // with only this call (hiding the keyboard, moving the caret).
+        if self.ime_original_text.as_ref() == Some(&self.text) {
+            self.ime_original_text = None;
+        } else if self.ime_original_text.is_some() && self.emit_events {
+            self.emit_change(cx);
+        }
     }
 
     /// Replace text in range.
@@ -8846,6 +8853,43 @@ mod tests {
                     state.scroll_handle.offset().x,
                     px(0.),
                     "long value should display from its start, not its tail"
+                );
+            });
+        });
+    }
+
+    /// Pasting past the right edge of a single-line input scrolls the caret
+    /// into view in the paint that lays the pasted text out.
+    #[gpui::test]
+    fn test_paste_reveals_caret_single_line(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+        cx.run_until_parked();
+
+        let value = format!("https://example.com/v1/users?{}", "x=1&".repeat(120));
+        cx.update(|window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+            input.update(cx, |state, cx| state.paste(&Paste, window, cx));
+        });
+        cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            input.read_with(cx, |state, _| {
+                assert!(
+                    state.scroll_size.width > state.input_bounds.size.width,
+                    "value must overflow the input width or this test is vacuous"
+                );
+                let caret = state
+                    .last_layout
+                    .as_ref()
+                    .and_then(|layout| layout.cursor_bounds)
+                    .expect("a caret");
+                assert!(
+                    caret.left() >= state.input_bounds.left()
+                        && caret.right() <= state.input_bounds.right(),
+                    "the caret at {caret:?} should be inside {:?}",
+                    state.input_bounds
                 );
             });
         });
