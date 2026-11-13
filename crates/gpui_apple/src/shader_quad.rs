@@ -413,6 +413,7 @@ fn build_pipeline(
     color_attachment.setSourceAlphaBlendFactor(MTLBlendFactor::One);
     color_attachment.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
     color_attachment.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+    descriptor.setDepthAttachmentPixelFormat(MTLPixelFormat::Depth32Float);
     let state = device
         .newRenderPipelineStateWithDescriptor_error(&descriptor)
         .map_err(|error| {

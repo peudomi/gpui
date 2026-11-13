@@ -647,7 +647,7 @@ mod tests {
             return;
         }
         let mut renderer =
-            crate::renderer::MetalRenderer::new(Default::default(), false, false).unwrap();
+            crate::renderer::MetalRenderer::new(Default::default(), false, false, false).unwrap();
         renderer.update_drawable_size(gpui::size(gpui::DevicePixels(64), gpui::DevicePixels(64)));
         let layer = renderer.layer().expect("window renderer has a layer");
         // The link is never added to a run loop: attaching it to the layer is

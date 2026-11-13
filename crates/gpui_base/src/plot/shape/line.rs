@@ -163,7 +163,7 @@ impl<T> Line<T> {
     }
 
     /// The stroke through `dots`.
-    fn build_path(&self, dots: &[Point<Pixels>]) -> Option<Path<Pixels>> {
+    fn build_path(&self, dots: &[Point<Pixels>]) -> Option<Path> {
         let mut builder = PathBuilder::stroke(self.stroke_width);
 
         if dots.is_empty() {
@@ -213,7 +213,7 @@ impl<T> Line<T> {
         builder.build().ok()
     }
 
-    fn path(&self, bounds: &Bounds<Pixels>) -> (Option<Path<Pixels>>, Vec<PaintQuad>) {
+    fn path(&self, bounds: &Bounds<Pixels>) -> (Option<Path>, Vec<PaintQuad>) {
         let (dots, paint_dots) = self.dots(bounds.origin);
         (self.build_path(&dots), paint_dots)
     }
@@ -235,7 +235,10 @@ impl<T> Line<T> {
         for dot in &dots {
             key.point(*dot);
         }
-        if let Some(path) = cache.get(key.finish(), bounds.origin, || self.build_path(&dots)) {
+        if let Some(path) = cache.get(key.finish(), bounds.origin, |origin| {
+            let dots: Vec<_> = dots.iter().map(|dot| *dot + origin).collect();
+            self.build_path(&dots)
+        }) {
             window.paint_path(path, self.stroke);
         }
         // Dots are quads: cheap, and positioned at this frame's origin.

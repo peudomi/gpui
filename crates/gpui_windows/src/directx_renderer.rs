@@ -28,7 +28,6 @@ use gpui::*;
 use windows::Win32::Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
 
 pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
-<<<<<<< HEAD
 // Wide-gamut rendering: the scene is rendered with sRGB-encoded values into
 // half-float targets, so components outside [0, 1] survive blending. The
 // wide_present pass then converts for the swap chain, whose format depends on
@@ -42,11 +41,6 @@ fn swap_chain_format(mode: OutputColorMode) -> DXGI_FORMAT {
         OutputColorMode::DisplayReferred { .. } => DXGI_FORMAT_B8G8R8A8_UNORM,
     }
 }
-// This configuration is used for MSAA rendering on paths only, and it's guaranteed to be supported by DirectX 11.
-const PATH_MULTISAMPLE_COUNT: u32 = 4;
-=======
-const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
->>>>>>> upstream/main
 const MAX_INSTANCE_BUFFER_SIZE: usize = 256 * 1024 * 1024;
 
 pub(crate) struct FontInfo {
@@ -107,18 +101,9 @@ struct DirectXResources {
     // blitting into the swap chain back buffer.
     render_target: Option<ID3D11Texture2D>,
     render_target_view: Option<ID3D11RenderTargetView>,
-<<<<<<< HEAD
     render_target_srv: Option<ID3D11ShaderResourceView>,
-
-    // Path intermediate textures (with MSAA)
-    path_intermediate_texture: ID3D11Texture2D,
-    path_intermediate_srv: Option<ID3D11ShaderResourceView>,
-    path_intermediate_msaa_texture: ID3D11Texture2D,
-    path_intermediate_msaa_view: Option<ID3D11RenderTargetView>,
-=======
     depth_stencil_texture: ID3D11Texture2D,
     depth_stencil_view: Option<ID3D11DepthStencilView>,
->>>>>>> upstream/main
 
     // Cached viewport
     viewport: D3D11_VIEWPORT,
@@ -264,15 +249,11 @@ impl DirectXRenderer {
         self.atlas.clone()
     }
 
-<<<<<<< HEAD
     pub(crate) fn textures(&self) -> Option<Arc<dyn PlatformTextures>> {
         self.shader_quads.textures()
     }
 
-    fn pre_draw(&self, clear_color: &[f32; 4]) -> Result<()> {
-=======
     fn pre_draw(&self, clear_color: &[f32; 4], depth_scale: f32) -> Result<()> {
->>>>>>> upstream/main
         let resources = self.resources.as_ref().expect("resources missing");
         let device_context = &self
             .devices
@@ -293,12 +274,9 @@ impl DirectXRenderer {
                 grayscale_enhanced_contrast: self.font_info.grayscale_enhanced_contrast,
                 subpixel_enhanced_contrast: self.font_info.subpixel_enhanced_contrast,
                 is_bgr: self.font_info.is_bgr as u32,
-<<<<<<< HEAD
-                color_output_mode,
-=======
                 depth_scale,
->>>>>>> upstream/main
-                _pad: [0; 2],
+                color_output_mode,
+                _pad: 0,
             }],
         )?;
         unsafe {
@@ -623,7 +601,6 @@ impl DirectXRenderer {
             .context("Failed to build RgbaImage from staging readback")
     }
 
-<<<<<<< HEAD
     /// Forces the output color mode to be re-resolved on the next draw. Called
     /// on display and system setting changes, which can toggle advanced color
     /// or reassign the monitor's ICC profile without the window changing
@@ -674,9 +651,10 @@ impl DirectXRenderer {
                 .context("Setting swap chain for DirectComposition")?;
         }
         unsafe {
-            devices
-                .device_context
-                .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
+            devices.device_context.OMSetRenderTargets(
+                Some(slice::from_ref(&resources.render_target_view)),
+                resources.depth_stencil_view.as_ref(),
+            );
         }
         self.resources = Some(resources);
         Ok(())
@@ -694,13 +672,23 @@ impl DirectXRenderer {
             devices
                 .device_context
                 .OMSetRenderTargets(Some(slice::from_ref(&resources.back_buffer_view)), None);
+            devices
+                .device_context
+                .RSSetViewports(Some(slice::from_ref(&resources.viewport)));
         }
-        self.pipelines.wide_present_pipeline.draw_with_texture(
-            &devices.device_context,
-            slice::from_ref(&resources.render_target_srv),
-            slice::from_ref(&self.globals.sampler),
-            1,
-        )?;
+        self.pipelines
+            .wide_present_pipeline
+            .draw_range_with_texture(
+                &devices.device_context,
+                slice::from_ref(&resources.render_target_srv),
+                self.globals
+                    .batch_params_buffer
+                    .as_ref()
+                    .context("batch params buffer missing")?,
+                slice::from_ref(&self.globals.sampler),
+                0,
+                1,
+            )?;
         unsafe {
             // Unbind the scene texture so it can be bound as the render target
             // again on the next frame.
@@ -715,7 +703,6 @@ impl DirectXRenderer {
         Ok(())
     }
 
-=======
     fn set_viewport_depth_range(&self, minimum_depth: f32, maximum_depth: f32) -> Result<()> {
         let devices = self.devices.as_ref().context("devices missing")?;
         let resources = self.resources.as_ref().context("resources missing")?;
@@ -746,7 +733,6 @@ impl DirectXRenderer {
         )
     }
 
->>>>>>> upstream/main
     pub(crate) fn resize(&mut self, new_size: Size<DevicePixels>) -> Result<()> {
         let width = new_size.width.0.max(1) as u32;
         let height = new_size.height.0.max(1) as u32;
@@ -921,107 +907,6 @@ impl DirectXRenderer {
             return Ok(());
         }
         let devices = self.devices.as_ref().context("devices missing")?;
-<<<<<<< HEAD
-        let resources = self.resources.as_ref().context("resources missing")?;
-        // Clear intermediate MSAA texture
-        unsafe {
-            devices.device_context.ClearRenderTargetView(
-                resources.path_intermediate_msaa_view.as_ref().unwrap(),
-                &[0.0; 4],
-            );
-            // Set intermediate MSAA texture as render target
-            devices.device_context.OMSetRenderTargets(
-                Some(slice::from_ref(&resources.path_intermediate_msaa_view)),
-                None,
-            );
-        }
-
-        // Collect all vertices and sprites for a single draw call
-        let mut vertices = Vec::new();
-
-        for path in paths {
-            vertices.extend(path.vertices.iter().map(|v| PathRasterizationSprite {
-                xy_position: v.xy_position,
-                st_position: v.st_position,
-                color: path.color,
-                bounds: path.clipped_bounds(),
-                content_mask: path.content_mask,
-            }));
-        }
-
-        self.pipelines.path_rasterization_pipeline.update_buffer(
-            &devices.device,
-            &devices.device_context,
-            &vertices,
-        )?;
-
-        self.pipelines.path_rasterization_pipeline.draw(
-            &devices.device_context,
-            D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-            vertices.len() as u32,
-            1,
-        )?;
-
-        // Resolve MSAA to non-MSAA intermediate texture
-        unsafe {
-            devices.device_context.ResolveSubresource(
-                &resources.path_intermediate_texture,
-                0,
-                &resources.path_intermediate_msaa_texture,
-                0,
-                SCENE_TARGET_FORMAT,
-            );
-            // Restore main render target
-            devices
-                .device_context
-                .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
-        }
-
-        Ok(())
-    }
-
-    fn draw_paths_from_intermediate(&mut self, paths: &[Path<ScaledPixels>]) -> Result<()> {
-        let Some(first_path) = paths.first() else {
-            return Ok(());
-        };
-
-        // When copying paths from the intermediate texture to the drawable,
-        // each pixel must only be copied once, in case of transparent paths.
-        //
-        // If all paths have the same draw order, then their bounds are all
-        // disjoint, so we can copy each path's bounds individually. If this
-        // batch combines different draw orders, we perform a single copy
-        // for a minimal spanning rect.
-        let sprites = if paths.last().unwrap().order == first_path.order {
-            paths
-                .iter()
-                .map(|path| PathSprite {
-                    bounds: path.clipped_bounds(),
-                })
-                .collect::<Vec<_>>()
-        } else {
-            let mut bounds = first_path.clipped_bounds();
-            for path in paths.iter().skip(1) {
-                bounds = bounds.union(&path.clipped_bounds());
-            }
-            vec![PathSprite { bounds }]
-        };
-
-        let devices = self.devices.as_ref().context("devices missing")?;
-        let resources = self.resources.as_ref().context("resources missing")?;
-        self.pipelines.path_sprite_pipeline.update_buffer(
-            &devices.device,
-            &devices.device_context,
-            &sprites,
-        )?;
-
-        // Draw the sprites with the path texture
-        self.pipelines.path_sprite_pipeline.draw_with_texture(
-            &devices.device_context,
-            slice::from_ref(&resources.path_intermediate_srv),
-            slice::from_ref(&self.globals.sampler),
-            sprites.len() as u32,
-=======
         self.pipelines.path_tile_pipeline.draw_range(
             &devices.device_context,
             self.globals
@@ -1030,7 +915,6 @@ impl DirectXRenderer {
                 .context("batch params buffer missing")?,
             tile_range.start as u32,
             tile_range.len() as u32,
->>>>>>> upstream/main
         )
     }
 
@@ -1135,12 +1019,28 @@ impl DirectXRenderer {
             .as_ref()
             .context("resources missing")?
             .viewport;
+        unsafe {
+            devices
+                .device_context
+                .OMSetDepthStencilState(&self.pipelines.quad_pipeline.depth_stencil_state, 0);
+        }
         self.shader_quads.draw(
             shaders,
             &devices.device,
             &devices.device_context,
             [viewport.Width, viewport.Height],
-        )
+        )?;
+        // Shader quads unbind their texture slots, which the path buffers share.
+        let path_buffers = [
+            self.pipelines.path_curves.view.clone(),
+            self.pipelines.path_paints.view.clone(),
+        ];
+        unsafe {
+            devices
+                .device_context
+                .PSSetShaderResources(2, Some(&path_buffers));
+        }
+        Ok(())
     }
 
     fn draw_surfaces(&mut self, surfaces: &[PaintSurface]) -> Result<()> {
@@ -1231,40 +1131,20 @@ impl DirectXResources {
             set_swap_chain_color_space(&swap_chain);
         }
 
-<<<<<<< HEAD
         let resources = create_resources(devices, &swap_chain, width, height)?;
-=======
-        let (
-            render_target,
-            render_target_view,
-            depth_stencil_texture,
-            depth_stencil_view,
-            viewport,
-        ) = create_resources(devices, &swap_chain, width, height)?;
->>>>>>> upstream/main
         set_rasterizer_state(&devices.device, &devices.device_context)?;
 
         Ok(Self {
             swap_chain,
-<<<<<<< HEAD
             swap_chain_format,
             back_buffer: Some(resources.back_buffer),
             back_buffer_view: resources.back_buffer_view,
             render_target: Some(resources.render_target),
             render_target_view: resources.render_target_view,
             render_target_srv: resources.render_target_srv,
-            path_intermediate_texture: resources.path_intermediate_texture,
-            path_intermediate_msaa_texture: resources.path_intermediate_msaa_texture,
-            path_intermediate_msaa_view: resources.path_intermediate_msaa_view,
-            path_intermediate_srv: resources.path_intermediate_srv,
+            depth_stencil_texture: resources.depth_stencil_texture,
+            depth_stencil_view: resources.depth_stencil_view,
             viewport: resources.viewport,
-=======
-            render_target: Some(render_target),
-            render_target_view,
-            depth_stencil_texture,
-            depth_stencil_view,
-            viewport,
->>>>>>> upstream/main
         })
     }
 
@@ -1275,32 +1155,15 @@ impl DirectXResources {
         width: u32,
         height: u32,
     ) -> Result<()> {
-<<<<<<< HEAD
         let resources = create_resources(devices, &self.swap_chain, width, height)?;
         self.back_buffer = Some(resources.back_buffer);
         self.back_buffer_view = resources.back_buffer_view;
         self.render_target = Some(resources.render_target);
         self.render_target_view = resources.render_target_view;
         self.render_target_srv = resources.render_target_srv;
-        self.path_intermediate_texture = resources.path_intermediate_texture;
-        self.path_intermediate_msaa_texture = resources.path_intermediate_msaa_texture;
-        self.path_intermediate_msaa_view = resources.path_intermediate_msaa_view;
-        self.path_intermediate_srv = resources.path_intermediate_srv;
+        self.depth_stencil_texture = resources.depth_stencil_texture;
+        self.depth_stencil_view = resources.depth_stencil_view;
         self.viewport = resources.viewport;
-=======
-        let (
-            render_target,
-            render_target_view,
-            depth_stencil_texture,
-            depth_stencil_view,
-            viewport,
-        ) = create_resources(devices, &self.swap_chain, width, height)?;
-        self.render_target = Some(render_target);
-        self.render_target_view = render_target_view;
-        self.depth_stencil_texture = depth_stencil_texture;
-        self.depth_stencil_view = depth_stencil_view;
-        self.viewport = viewport;
->>>>>>> upstream/main
         Ok(())
     }
 }
@@ -1358,17 +1221,14 @@ impl DirectXRenderPipelines {
             16,
             create_blend_state(device)?,
         )?;
-<<<<<<< HEAD
+        let opaque_quad_pipeline = OpaqueQuadPipeline::new(device)?;
         let wide_present_pipeline = PipelineState::new(
             device,
             "wide_present_pipeline",
             ShaderModule::WidePresent,
             1,
-            create_blend_state_disabled(device)?,
+            create_opaque_blend_state(device)?,
         )?;
-=======
-        let opaque_quad_pipeline = OpaqueQuadPipeline::new(device)?;
->>>>>>> upstream/main
 
         Ok(Self {
             shadow_pipeline,
@@ -1449,12 +1309,9 @@ struct GlobalParams {
     grayscale_enhanced_contrast: f32,
     subpixel_enhanced_contrast: f32,
     is_bgr: u32,
-<<<<<<< HEAD
-    color_output_mode: u32,
-=======
     depth_scale: f32,
->>>>>>> upstream/main
-    _pad: [u32; 2],
+    color_output_mode: u32,
+    _pad: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1629,16 +1486,6 @@ impl<T> PipelineState<T> {
     }
 }
 
-<<<<<<< HEAD
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct PathRasterizationSprite {
-    xy_position: Point<ScaledPixels>,
-    st_position: Point<f32>,
-    color: Background,
-    bounds: Bounds<ScaledPixels>,
-    content_mask: ContentMask<ScaledPixels>,
-=======
 /// Draws opaque rectangles ahead of everything else, writing depth so that
 /// later passes skip the pixels they cover.
 struct OpaqueQuadPipeline {
@@ -1646,7 +1493,6 @@ struct OpaqueQuadPipeline {
     fragment: ID3D11PixelShader,
     blend_state: ID3D11BlendState,
     depth_stencil_state: ID3D11DepthStencilState,
->>>>>>> upstream/main
 }
 
 impl OpaqueQuadPipeline {
@@ -1784,10 +1630,8 @@ struct CreatedResources {
     render_target: ID3D11Texture2D,
     render_target_view: Option<ID3D11RenderTargetView>,
     render_target_srv: Option<ID3D11ShaderResourceView>,
-    path_intermediate_texture: ID3D11Texture2D,
-    path_intermediate_srv: Option<ID3D11ShaderResourceView>,
-    path_intermediate_msaa_texture: ID3D11Texture2D,
-    path_intermediate_msaa_view: Option<ID3D11RenderTargetView>,
+    depth_stencil_texture: ID3D11Texture2D,
+    depth_stencil_view: Option<ID3D11DepthStencilView>,
     viewport: D3D11_VIEWPORT,
 }
 
@@ -1797,53 +1641,22 @@ fn create_resources(
     swap_chain: &IDXGISwapChain1,
     width: u32,
     height: u32,
-<<<<<<< HEAD
 ) -> Result<CreatedResources> {
     let (back_buffer, back_buffer_view) =
         create_back_buffer_and_its_view(swap_chain, &devices.device)?;
     let (render_target, render_target_view, render_target_srv) =
         create_scene_render_target(&devices.device, width, height)?;
-    let (path_intermediate_texture, path_intermediate_srv) =
-        create_path_intermediate_texture(&devices.device, width, height)?;
-    let (path_intermediate_msaa_texture, path_intermediate_msaa_view) =
-        create_path_intermediate_msaa_texture_and_view(&devices.device, width, height)?;
-    let viewport = D3D11_VIEWPORT {
-        TopLeftX: 0.0,
-        TopLeftY: 0.0,
-        Width: width as f32,
-        Height: height as f32,
-        MinDepth: 0.0,
-        MaxDepth: 1.0,
-    };
+    let (depth_stencil_texture, depth_stencil_view) =
+        create_depth_stencil_texture_and_view(&devices.device, width, height)?;
+    let viewport = set_viewport(&devices.device_context, width as f32, height as f32);
     Ok(CreatedResources {
         back_buffer,
         back_buffer_view,
         render_target,
         render_target_view,
         render_target_srv,
-        path_intermediate_texture,
-        path_intermediate_srv,
-        path_intermediate_msaa_texture,
-        path_intermediate_msaa_view,
-=======
-) -> Result<(
-    ID3D11Texture2D,
-    Option<ID3D11RenderTargetView>,
-    ID3D11Texture2D,
-    Option<ID3D11DepthStencilView>,
-    D3D11_VIEWPORT,
-)> {
-    let (render_target, render_target_view) =
-        create_render_target_and_its_view(swap_chain, &devices.device)?;
-    let (depth_stencil_texture, depth_stencil_view) =
-        create_depth_stencil_texture_and_view(&devices.device, width, height)?;
-    let viewport = set_viewport(&devices.device_context, width as f32, height as f32);
-    Ok((
-        render_target,
-        render_target_view,
         depth_stencil_texture,
         depth_stencil_view,
->>>>>>> upstream/main
         viewport,
     })
 }
@@ -1937,11 +1750,7 @@ fn create_depth_stencil_texture_and_view(
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
-<<<<<<< HEAD
-            Format: SCENE_TARGET_FORMAT,
-=======
             Format: DXGI_FORMAT_D32_FLOAT,
->>>>>>> upstream/main
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -1954,48 +1763,9 @@ fn create_depth_stencil_texture_and_view(
         device.CreateTexture2D(&desc, None, Some(&mut output))?;
         output.unwrap()
     };
-<<<<<<< HEAD
-
-    let mut shader_resource_view = None;
-    unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut shader_resource_view))? };
-
-    Ok((texture, Some(shader_resource_view.unwrap())))
-}
-
-#[inline]
-fn create_path_intermediate_msaa_texture_and_view(
-    device: &ID3D11Device,
-    width: u32,
-    height: u32,
-) -> Result<(ID3D11Texture2D, Option<ID3D11RenderTargetView>)> {
-    let msaa_texture = unsafe {
-        let mut output = None;
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: width,
-            Height: height,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: SCENE_TARGET_FORMAT,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: PATH_MULTISAMPLE_COUNT,
-                Quality: D3D11_STANDARD_MULTISAMPLE_PATTERN.0 as u32,
-            },
-            Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
-            CPUAccessFlags: 0,
-            MiscFlags: 0,
-        };
-        device.CreateTexture2D(&desc, None, Some(&mut output))?;
-        output.unwrap()
-    };
-    let mut msaa_view = None;
-    unsafe { device.CreateRenderTargetView(&msaa_texture, None, Some(&mut msaa_view))? };
-    Ok((msaa_texture, Some(msaa_view.unwrap())))
-=======
     let mut view = None;
     unsafe { device.CreateDepthStencilView(&texture, None, Some(&mut view))? };
     Ok((texture, view))
->>>>>>> upstream/main
 }
 
 #[inline]
@@ -2041,11 +1811,7 @@ fn create_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> {
 }
 
 #[inline]
-<<<<<<< HEAD
-fn create_blend_state_disabled(device: &ID3D11Device) -> Result<ID3D11BlendState> {
-=======
 fn create_opaque_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> {
->>>>>>> upstream/main
     let mut desc = D3D11_BLEND_DESC::default();
     desc.RenderTarget[0].BlendEnable = false.into();
     desc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
@@ -2063,8 +1829,6 @@ fn create_opaque_blend_state(device: &ID3D11Device) -> Result<ID3D11BlendState> 
 }
 
 #[inline]
-<<<<<<< HEAD
-=======
 fn create_depth_stencil_state(
     device: &ID3D11Device,
     write_mask: D3D11_DEPTH_WRITE_MASK,
@@ -2093,7 +1857,6 @@ fn create_depth_stencil_state(
 }
 
 #[inline]
->>>>>>> upstream/main
 fn create_blend_state_for_subpixel_rendering(device: &ID3D11Device) -> Result<ID3D11BlendState> {
     let mut desc = D3D11_BLEND_DESC::default();
     desc.RenderTarget[0].BlendEnable = true.into();

@@ -147,31 +147,13 @@ pub struct MetalRenderer {
     instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
     sprite_atlas: Arc<MetalAtlas>,
     core_video_texture_cache: CFRetained<CVMetalTextureCache>,
-<<<<<<< HEAD
     shader_quads: ShaderQuads,
-    path_intermediate_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
-    path_intermediate_msaa_texture: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
-    path_sample_count: u32,
-=======
->>>>>>> upstream/main
     /// Offscreen render target reused across `render_scene` calls when
     /// rendering headlessly without reading pixels back.
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
     headless_render_target: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
 }
 
-<<<<<<< HEAD
-#[repr(C)]
-pub struct PathRasterizationVertex {
-    pub xy_position: Point<ScaledPixels>,
-    pub st_position: Point<f32>,
-    pub color: Background,
-    pub bounds: Bounds<ScaledPixels>,
-    pub content_mask: ContentMask<ScaledPixels>,
-}
-
-=======
->>>>>>> upstream/main
 impl MetalRenderer {
     /// Creates a new MetalRenderer with a CAMetalLayer for window-based rendering.
     pub fn new(
@@ -348,27 +330,11 @@ impl MetalRenderer {
         let path_tiles_pipeline_state = build_pipeline_state(
             &device,
             &library,
-<<<<<<< HEAD
-            "paths_rasterization",
-            "path_rasterization_vertex",
-            "path_rasterization_fragment",
-            pixel_format,
-            PATH_SAMPLE_COUNT,
-        )?;
-        let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
-            &device,
-            &library,
-            "path_sprites",
-            "path_sprite_vertex",
-            "path_sprite_fragment",
-            pixel_format,
-=======
             "path_tiles",
             "path_tile_vertex",
             "path_tile_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
             true,
->>>>>>> upstream/main
         )?;
         let shadows_pipeline_state = build_pipeline_state(
             &device,
@@ -376,12 +342,8 @@ impl MetalRenderer {
             "shadows",
             "shadow_vertex",
             "shadow_fragment",
-<<<<<<< HEAD
             pixel_format,
-=======
-            MTLPixelFormat::BGRA8Unorm,
             true,
->>>>>>> upstream/main
         )?;
         let quads_pipeline_state = build_pipeline_state(
             &device,
@@ -389,10 +351,7 @@ impl MetalRenderer {
             "quads",
             "quad_vertex",
             "quad_fragment",
-<<<<<<< HEAD
             pixel_format,
-=======
-            MTLPixelFormat::BGRA8Unorm,
             true,
         )?;
         let opaque_quads_pipeline_state = build_pipeline_state(
@@ -401,9 +360,8 @@ impl MetalRenderer {
             "opaque_quads",
             "opaque_quad_vertex",
             "opaque_quad_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            pixel_format,
             false,
->>>>>>> upstream/main
         )?;
         let underlines_pipeline_state = build_pipeline_state(
             &device,
@@ -411,12 +369,8 @@ impl MetalRenderer {
             "underlines",
             "underline_vertex",
             "underline_fragment",
-<<<<<<< HEAD
             pixel_format,
-=======
-            MTLPixelFormat::BGRA8Unorm,
             true,
->>>>>>> upstream/main
         )?;
         let monochrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -424,12 +378,8 @@ impl MetalRenderer {
             "monochrome_sprites",
             "monochrome_sprite_vertex",
             "monochrome_sprite_fragment",
-<<<<<<< HEAD
             pixel_format,
-=======
-            MTLPixelFormat::BGRA8Unorm,
             true,
->>>>>>> upstream/main
         )?;
         let polychrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -437,12 +387,8 @@ impl MetalRenderer {
             "polychrome_sprites",
             "polychrome_sprite_vertex",
             "polychrome_sprite_fragment",
-<<<<<<< HEAD
             pixel_format,
-=======
-            MTLPixelFormat::BGRA8Unorm,
             true,
->>>>>>> upstream/main
         )?;
         let surfaces_pipeline_state = build_pipeline_state(
             &device,
@@ -450,12 +396,8 @@ impl MetalRenderer {
             "surfaces",
             "surface_vertex",
             "surface_fragment",
-<<<<<<< HEAD
             pixel_format,
-=======
-            MTLPixelFormat::BGRA8Unorm,
             true,
->>>>>>> upstream/main
         )?;
 
         let depth_write_state = build_depth_stencil_state(&device, true)?;
@@ -506,13 +448,7 @@ impl MetalRenderer {
             instance_buffer_pool,
             sprite_atlas,
             core_video_texture_cache,
-<<<<<<< HEAD
             shader_quads,
-            path_intermediate_texture: None,
-            path_intermediate_msaa_texture: None,
-            path_sample_count: PATH_SAMPLE_COUNT,
-=======
->>>>>>> upstream/main
             #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
             headless_render_target: None,
         })
@@ -596,78 +532,6 @@ impl MetalRenderer {
         if let Some(layer) = &self.layer {
             layer.setDrawableSize(CGSize::new(size.width.0 as f64, size.height.0 as f64));
         }
-<<<<<<< HEAD
-        if let Err(error) = self.update_path_intermediate_textures(size) {
-            log::error!("failed to resize path textures: {error:#}");
-        }
-    }
-
-    fn update_path_intermediate_textures(&mut self, size: Size<DevicePixels>) -> Result<()> {
-        // We are uncertain when this happens, but sometimes size can be 0 here. Most likely before
-        // the layout pass on window creation. Zero-sized texture creation causes SIGABRT.
-        // https://github.com/zed-industries/zed/issues/36229
-        if size.width.0 <= 0 || size.height.0 <= 0 {
-            self.path_intermediate_texture = None;
-            self.path_intermediate_msaa_texture = None;
-            return Ok(());
-        }
-
-        if self
-            .path_intermediate_texture
-            .as_ref()
-            .is_some_and(|texture| {
-                texture.width() == size.width.0 as usize
-                    && texture.height() == size.height.0 as usize
-            })
-        {
-            return Ok(());
-        }
-
-        self.path_intermediate_texture = None;
-        self.path_intermediate_msaa_texture = None;
-        let texture_descriptor = MTLTextureDescriptor::new();
-        // SAFETY: The dimensions are positive and this descriptor creates a 2D texture.
-        unsafe {
-            texture_descriptor.setWidth(size.width.0 as usize);
-            texture_descriptor.setHeight(size.height.0 as usize);
-        }
-        texture_descriptor.setPixelFormat(self.pixel_format);
-        texture_descriptor.setStorageMode(MTLStorageMode::Private);
-        texture_descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
-        let intermediate_texture = self
-            .device
-            .newTextureWithDescriptor(&texture_descriptor)
-            .context("allocating path intermediate texture")?;
-
-        let msaa_texture = if self.path_sample_count > 1 {
-            // https://developer.apple.com/documentation/metal/choosing-a-resource-storage-mode-for-apple-gpus
-            // Rendering MSAA textures are done in a single pass, so we can use memory-less storage on Apple Silicon
-            let storage_mode = if self.is_apple_gpu {
-                MTLStorageMode::Memoryless
-            } else {
-                MTLStorageMode::Private
-            };
-
-            let msaa_descriptor = texture_descriptor;
-            msaa_descriptor.setTextureType(MTLTextureType::Type2DMultisample);
-            msaa_descriptor.setStorageMode(storage_mode);
-            // SAFETY: The multisample texture uses the same sample count as its render pipeline.
-            unsafe {
-                msaa_descriptor.setSampleCount(self.path_sample_count as _);
-            }
-            Some(
-                self.device
-                    .newTextureWithDescriptor(&msaa_descriptor)
-                    .context("allocating multisample path texture")?,
-            )
-        } else {
-            None
-        };
-        self.path_intermediate_texture = Some(intermediate_texture);
-        self.path_intermediate_msaa_texture = msaa_texture;
-        Ok(())
-=======
->>>>>>> upstream/main
     }
 
     pub fn update_transparency(&mut self, transparent: bool) {
@@ -935,13 +799,10 @@ impl MetalRenderer {
             .commandBuffer()
             .context("creating command buffer")?;
         let alpha = if self.opaque { 1. } else { 0. };
-<<<<<<< HEAD
         self.shader_quads
             .textures()
             .encode_uploads(&command_buffer)?;
-=======
         let depth_texture = self.depth_texture_matching(texture)?;
->>>>>>> upstream/main
 
         let command_encoder = new_command_encoder_for_texture(
             &command_buffer,
@@ -1043,13 +904,24 @@ impl MetalRenderer {
                         return Err(error);
                     }
                 }
-                PrimitiveBatch::Shaders(range) => self.shader_quads.draw(
-                    &scene.shaders[range],
-                    &self.device,
-                    self.pixel_format,
-                    viewport_size,
-                    &command_encoder,
-                ),
+                PrimitiveBatch::Shaders(range) => {
+                    self.shader_quads.draw(
+                        &scene.shaders[range],
+                        &self.device,
+                        self.pixel_format,
+                        viewport_size,
+                        &command_encoder,
+                    );
+                    // SAFETY: Metal copies the value. Shader quads bind their instance at
+                    // vertex slot 0, where the built-in pipelines read the viewport size.
+                    unsafe {
+                        command_encoder.setVertexBytes_length_atIndex(
+                            ptr::NonNull::from(&viewport_size).cast(),
+                            mem::size_of_val(&viewport_size),
+                            GlobalInputIndex::ViewportSize as usize,
+                        );
+                    }
+                }
                 PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
             }
         }
@@ -1069,28 +941,11 @@ impl MetalRenderer {
         {
             return Ok(depth_texture.clone());
         }
-<<<<<<< HEAD
-        let intermediate_texture = self
-            .path_intermediate_texture
-            .as_ref()
-            .context("missing path intermediate texture")?;
-
-        let mut vertices = Vec::new();
-        for path in paths {
-            vertices.extend(path.vertices.iter().map(|v| PathRasterizationVertex {
-                xy_position: v.xy_position,
-                st_position: v.st_position,
-                color: path.color,
-                bounds: path.bounds.intersect(&path.content_mask.bounds),
-                content_mask: path.content_mask,
-            }));
-=======
         let descriptor = MTLTextureDescriptor::new();
         // SAFETY: The size is the size of an existing render target, which the device supports.
         unsafe {
             descriptor.setWidth(target.width());
             descriptor.setHeight(target.height());
->>>>>>> upstream/main
         }
         descriptor.setPixelFormat(MTLPixelFormat::Depth32Float);
         descriptor.setUsage(MTLTextureUsage::RenderTarget);
