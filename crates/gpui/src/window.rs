@@ -5058,17 +5058,10 @@ impl Window {
                 content_mask,
                 corner_radii: Corners::default(),
                 color: shadow.color.opacity(opacity),
-<<<<<<< HEAD
-                element_bounds,
-                element_corner_radii,
-                inset: 0,
-                corner_smoothing,
-=======
                 shape_bounds,
                 shape_corner_radii: corner_radii.scale(scale_factor),
                 inset: false.into(),
-                pad: 0,
->>>>>>> upstream/main
+                corner_smoothing,
             });
         }
     }
@@ -5111,34 +5104,15 @@ impl Window {
                 content_mask,
                 corner_radii: element_corner_radii,
                 color: shadow.color.opacity(opacity),
-<<<<<<< HEAD
-                element_bounds,
-                element_corner_radii,
-                inset: 1,
-                corner_smoothing,
-=======
                 shape_bounds: self.cover_bounds(hole),
                 shape_corner_radii: hole_corner_radii.scale(scale_factor),
                 inset: true.into(),
-                pad: 0,
->>>>>>> upstream/main
+                corner_smoothing,
             });
         }
     }
 
     fn largest_border_interior(quad: &Quad) -> Bounds<ScaledPixels> {
-<<<<<<< HEAD
-        let radii = &quad
-            .corner_radii
-            .map(|radius| ScaledPixels(radius.0 * (1. + quad.corner_smoothing)));
-        let widths = &quad.border_widths;
-        let edge_radii = Edges {
-            top: radii.top_left.max(radii.top_right),
-            right: radii.top_right.max(radii.bottom_right),
-            bottom: radii.bottom_left.max(radii.bottom_right),
-            left: radii.top_left.max(radii.bottom_left),
-        };
-=======
         let size = quad.bounds.size;
         let diagonal = (size.width.0 * size.width.0 + size.height.0 * size.height.0).sqrt();
         if diagonal == 0. {
@@ -5149,7 +5123,6 @@ impl Window {
         // the largest interior.
         let cos = size.height.0 / diagonal;
         let sin = size.width.0 / diagonal;
->>>>>>> upstream/main
 
         // A corner's inner border edge is a quarter ellipse around the
         // corner's center, with the border widths taken off its radius.
@@ -5160,7 +5133,9 @@ impl Window {
             )
         };
 
-        let radii = &quad.corner_radii;
+        let radii = &quad
+            .corner_radii
+            .map(|radius| ScaledPixels(radius.0 * (1. + quad.corner_smoothing)));
         let widths = &quad.border_widths;
         let top_left = corner_inset(radii.top_left, widths.left, widths.top);
         let top_right = corner_inset(radii.top_right, widths.right, widths.top);
@@ -5221,7 +5196,9 @@ impl Window {
 
         let is_rectangle =
             quad.border_widths == Edges::default() && quad.corner_radii == Corners::default();
-        if has_background && is_rectangle {
+        // Splitting re-bounds the content mask, which moves a rounded mask's corners.
+        if (has_background && is_rectangle) || quad.content_mask.corner_radii != Corners::default()
+        {
             self.next_frame.scene.insert_primitive(quad);
             return;
         }
@@ -5261,6 +5238,7 @@ impl Window {
             self.next_frame.scene.insert_primitive(Quad {
                 content_mask: ContentMask {
                     bounds: quad.content_mask.bounds.intersect(&inner_bounds),
+                    ..Default::default()
                 },
                 border_widths: Edges::default(),
                 corner_radii: Corners::default(),
@@ -5292,29 +5270,13 @@ impl Window {
         ];
 
         for strip in strips {
-<<<<<<< HEAD
-            let content_mask_bounds = quad.content_mask.bounds.intersect(&strip);
-            if !content_mask_bounds.is_empty() {
-                self.next_frame.scene.insert_primitive(Quad {
-                    content_mask: if content_mask_bounds == quad.content_mask.bounds {
-                        quad.content_mask
-                    } else {
-                        ContentMask {
-                            bounds: content_mask_bounds,
-                            ..Default::default()
-                        }
-                    },
-                    ..quad
-                });
-            }
-=======
             self.next_frame.scene.insert_primitive(Quad {
                 content_mask: ContentMask {
                     bounds: quad.content_mask.bounds.intersect(&strip),
+                    ..Default::default()
                 },
                 ..strip_quad
             });
->>>>>>> upstream/main
         }
     }
 

@@ -5,14 +5,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-<<<<<<< HEAD
     AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, PaintShader,
-    Pixels, Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
-=======
-    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Path,
-    PathTiles, Pixels, Point, Radians, ScaledPixels, Size, TimedTransformation,
+    Path, PathTiles, Pixels, Point, Radians, ScaledPixels, Size, TimedTransformation,
     bounds_tree::BoundsTree,
->>>>>>> upstream/main
 };
 use smallvec::SmallVec;
 use std::{
@@ -65,11 +60,8 @@ pub struct Scene {
     pub subpixel_sprites: Vec<SubpixelSprite>,
     pub polychrome_sprites: Vec<PolychromeSprite>,
     pub surfaces: Vec<PaintSurface>,
-<<<<<<< HEAD
     pub shaders: Vec<PaintShader>,
-=======
     animations: Vec<SpriteAnimation>,
->>>>>>> upstream/main
 }
 
 #[expect(missing_docs)]
@@ -87,9 +79,7 @@ impl Scene {
         self.subpixel_sprites.clear();
         self.polychrome_sprites.clear();
         self.surfaces.clear();
-<<<<<<< HEAD
         self.shaders.clear();
-=======
         self.animations.clear();
     }
 
@@ -133,7 +123,6 @@ impl Scene {
             sprite.transformation = pose.into_matrix(animation.center, animation.scale_factor);
             sprite.color = animation.base_color.opacity(pose.alpha_factor());
         }
->>>>>>> upstream/main
     }
 
     pub fn len(&self) -> usize {
@@ -146,7 +135,7 @@ impl Scene {
             primitives: SmallVec::new(),
             bounds: Bounds::default(),
             max_kind: PrimitiveKind::Shadow,
-            max_shared_kind: PrimitiveKind::Surface,
+            max_shared_kind: PrimitiveKind::Shader,
         });
         self.paint_operations.push(PaintOperation::StartLayer);
     }
@@ -199,18 +188,11 @@ impl Scene {
                 Some(range) if range.end == index => range.end += 1,
                 _ => layer.primitives.push(index..index + 1),
             }
-<<<<<<< HEAD
-            Primitive::Shader(shader) => {
-                shader.order = order;
-                self.shaders.push(shader.clone());
-            }
-=======
         } else {
             let order = self
                 .primitive_bounds
                 .insert(clipped_bounds, kind, kind.max_shared_kind());
             self.push_primitive(primitive.clone(), order);
->>>>>>> upstream/main
         }
         self.paint_operations
             .push(PaintOperation::Primitive(primitive));
@@ -240,6 +222,10 @@ impl Scene {
             Primitive::Surface(mut surface) => {
                 surface.order = order;
                 self.surfaces.push(surface);
+            }
+            Primitive::Shader(mut shader) => {
+                shader.order = order;
+                self.shaders.push(shader);
             }
         }
     }
@@ -281,9 +267,7 @@ impl Scene {
             (sprite.order, sprite.tile.texture_id.index)
         });
         self.surfaces.sort_by_key(|surface| surface.order);
-<<<<<<< HEAD
         self.shaders.sort_by_key(|shader| shader.order);
-=======
 
         // Sorting moved the sprites, so animations learn where theirs ended up.
         if !self.animations.is_empty() {
@@ -293,7 +277,6 @@ impl Scene {
                 }
             }
         }
->>>>>>> upstream/main
     }
 
     #[cfg_attr(
@@ -448,6 +431,7 @@ impl Primitive {
             Primitive::SubpixelSprite(_) => PrimitiveKind::SubpixelSprite,
             Primitive::PolychromeSprite(_) => PrimitiveKind::PolychromeSprite,
             Primitive::Surface(_) => PrimitiveKind::Surface,
+            Primitive::Shader(_) => PrimitiveKind::Shader,
         }
     }
 
@@ -840,18 +824,10 @@ pub struct Shadow {
     pub corner_radii: Corners<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
-<<<<<<< HEAD
-    pub element_bounds: Bounds<ScaledPixels>,
-    pub element_corner_radii: Corners<ScaledPixels>,
-    /// 0 = drop shadow (rendered outside the element), 1 = inset shadow (rendered inside).
-    pub inset: u32,
-    pub corner_smoothing: f32,
-=======
     pub shape_bounds: Bounds<ScaledPixels>,
     pub shape_corner_radii: Corners<ScaledPixels>,
     pub inset: PaddedBool32,
-    pub pad: u32, // align to 8 bytes
->>>>>>> upstream/main
+    pub corner_smoothing: f32,
 }
 
 impl From<Shadow> for Primitive {
@@ -1237,7 +1213,10 @@ mod tests {
     fn quad(x: f32) -> Quad {
         Quad {
             bounds: square(x),
-            content_mask: ContentMask { bounds: square(x) },
+            content_mask: ContentMask {
+                bounds: square(x),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -1247,7 +1226,10 @@ mod tests {
             order: 0,
             pad: 0,
             bounds: square(x),
-            content_mask: ContentMask { bounds: square(x) },
+            content_mask: ContentMask {
+                bounds: square(x),
+                ..Default::default()
+            },
             color: Hsla::default(),
             thickness: ScaledPixels(1.),
             wavy: false.into(),
