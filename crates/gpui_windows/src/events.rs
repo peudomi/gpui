@@ -181,7 +181,7 @@ impl WindowsWindowInner {
         }
     }
 
-    fn handle_move_msg(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
+    fn handle_move_msg(self: &Rc<Self>, handle: HWND, lparam: LPARAM) -> Option<isize> {
         let origin = logical_point(
             lparam.signed_loword() as f32,
             lparam.signed_hiword() as f32,
@@ -1024,7 +1024,7 @@ impl WindowsWindowInner {
         Some(0)
     }
 
-    fn handle_display_change_msg(&self, handle: HWND) -> Option<isize> {
+    fn handle_display_change_msg(self: &Rc<Self>, handle: HWND) -> Option<isize> {
         // Display topology changes can flip advanced color on or off; make the
         // renderer re-resolve its output color mode on the next draw.
         self.state
@@ -1041,12 +1041,20 @@ impl WindowsWindowInner {
         Some(0)
     }
 
-    fn set_display(&self, display: WindowsDisplay) {
+    // Windows can deliver `WM_DISPLAYCHANGE` and `WM_MOVE` while GPUI is
+    // updating a window (e.g. a clipboard read during a draw pumps sent
+    // messages), so report the change after that update completes.
+    fn set_display(self: &Rc<Self>, display: WindowsDisplay) {
         self.state.display.set(display);
-        if let Some(mut callback) = self.state.callbacks.display_changed.take() {
-            callback();
-            self.state.callbacks.display_changed.set(Some(callback));
-        }
+        let this = self.clone();
+        self.executor
+            .spawn(async move {
+                if let Some(mut callback) = this.state.callbacks.display_changed.take() {
+                    callback();
+                    this.state.callbacks.display_changed.set(Some(callback));
+                }
+            })
+            .detach();
     }
 
     fn handle_hit_test_msg(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
