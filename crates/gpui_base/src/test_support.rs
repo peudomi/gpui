@@ -4,7 +4,7 @@
 //! identified GPUI elements with `.test_support()`, without supplying test-only state.
 use gpui::{
     App, Bounds, Element, ElementId, FocusHandle, GlobalElementId, Hitbox, InspectorElementId,
-    InteractiveElement, IntoElement, LayoutId, Pixels, SharedString, Visibility, Window, px,
+    InteractiveElement, LayoutId, Pixels, SharedString, Visibility, Window, px,
 };
 use smallvec::SmallVec;
 use std::{
@@ -450,12 +450,6 @@ impl<E: Element> Observed<E> {
         }
     }
 }
-impl<E: Element<PrepaintState = Option<Hitbox>> + InteractiveElement> IntoElement for Observed<E> {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
 impl<E: Element<PrepaintState = Option<Hitbox>> + InteractiveElement> Element for Observed<E> {
     type RequestLayoutState = E::RequestLayoutState;
     type PrepaintState = (Option<Hitbox>, Rc<Registration>);
@@ -642,12 +636,6 @@ impl<E: Element> ObservedText<E> {
         E: InteractiveElement,
     {
         ObservedText::new(self.inner.id(id), self.text, self.alternative)
-    }
-}
-impl<E: Element> IntoElement for ObservedText<E> {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
     }
 }
 impl<E: Element> Element for ObservedText<E> {

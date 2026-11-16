@@ -2287,7 +2287,7 @@ mod tests {
     }
 
     impl Render for ScrollbarHarness {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
             let mut scrollbar = Scrollbar::new(&self.handle).axis(self.axis).mode(self.mode);
             if let Some(size) = self.scroll_viewport_size {
                 scrollbar = scrollbar.scroll_viewport_size(size);
@@ -2594,7 +2594,7 @@ mod tests {
     }
 
     impl Render for CoveredHarness {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
             div()
                 .relative()
                 .size(px(100.))
@@ -2788,7 +2788,8 @@ mod tests {
             scrollbar: Scrollbar,
             painted: Rc<Cell<Bounds<Pixels>>>,
         }
-        impl IntoElement for Probe {
+        #[cfg(not(feature = "gpui-fast"))]
+        impl gpui::IntoElement for Probe {
             type Element = Self;
             fn into_element(self) -> Self {
                 self
@@ -2848,7 +2849,7 @@ mod tests {
             viewport: Bounds<Pixels>,
         }
         impl Render for Root {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
                 div().size(px(400.)).child(Probe {
                     scrollbar: Scrollbar::new(&self.handle)
                         .axis(self.axis)

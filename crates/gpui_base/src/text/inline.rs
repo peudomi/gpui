@@ -448,12 +448,9 @@ thread_local! {
     static RETAINED_LAYOUTS: RefCell<HashMap<usize, RetainedLayout>> = RefCell::new(HashMap::new());
     /// [`DROPPED_STATES`] when this thread's table was last swept.
     static SWEPT_AT_DROPS: Cell<usize> = const { Cell::new(0) };
+    #[cfg(test)]
+    static RETAINED_LAYOUT_SWEEPS: Cell<usize> = const { Cell::new(0) };
 }
-
-/// Dead entries (states that were dropped without a final paint, e.g. a
-/// replaced document) are swept once the table grows past this many, or by
-/// the UI cleanup task after an [`InlineState`] was dropped.
-const RETAINED_SWEEP_AT: usize = 4096;
 
 /// How many [`InlineState`]s have been dropped. States drop on whichever
 /// thread lets go of them last (the background parse included), so this is a
@@ -534,7 +531,10 @@ fn sweep_retained_layouts() {
         // Read before sweeping: a state dropped during the sweep wakes another
         // cleanup and must not be acknowledged by this pass.
         let dropped = DROPPED_STATES.load(Ordering::Acquire);
-        if dropped != SWEPT_AT_DROPS.get() || layouts.len() >= RETAINED_SWEEP_AT {
+        // Live layouts cannot be reclaimed, regardless of the table's size.
+        if dropped != SWEPT_AT_DROPS.get() {
+            #[cfg(test)]
+            RETAINED_LAYOUT_SWEEPS.with(|sweeps| sweeps.set(sweeps.get() + 1));
             layouts.retain(|_, retained| retained.state.strong_count() > 0);
             SWEPT_AT_DROPS.set(dropped);
         }
@@ -2041,7 +2041,7 @@ mod line_bounds_tests {
                     let styled =
                         StyledText::new(SharedString::from(text.to_string())).with_runs(runs);
                     let layout = styled.layout().clone();
-                    let mut element = styled.into_any_element();
+                    let mut element = gpui::IntoElement::into_any_element(styled);
                     element.layout_as_root(
                         size(
                             AvailableSpace::Definite(px(wrap_width)),
@@ -2132,7 +2132,7 @@ mod range_highlight_tests {
                 &[],
             ));
             let layout = styled.layout().clone();
-            let mut element = styled.into_any_element();
+            let mut element = gpui::IntoElement::into_any_element(styled);
             element.layout_as_root(
                 size(
                     AvailableSpace::Definite(px(wrap_width)),
@@ -2185,7 +2185,7 @@ mod range_highlight_tests {
                     let styled =
                         StyledText::new(SharedString::from(text.to_string())).with_runs(runs);
                     let layout = styled.layout().clone();
-                    let mut element = styled.into_any_element();
+                    let mut element = gpui::IntoElement::into_any_element(styled);
                     element.layout_as_root(
                         size(
                             AvailableSpace::Definite(px(wrap_width)),
@@ -2958,6 +2958,41 @@ mod retained_layout_tests {
             cleanup,
         );
         state
+    }
+
+    #[test]
+    fn live_layouts_above_the_old_threshold_do_not_trigger_sweeps() {
+        super::sweep_retained_layouts();
+        let dropped_before = super::SWEPT_AT_DROPS.get();
+        let sweeps_before = super::RETAINED_LAYOUT_SWEEPS.get();
+        let states = (0..8192)
+            .map(|_| hand_over("live paragraph", None))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            RETAINED_LAYOUTS.with(|layouts| layouts.borrow().len()),
+            8192
+        );
+
+        // Hand the same layouts to the next frame without dropping any state.
+        for state in &states {
+            let retained = super::take_retained_layout(state).unwrap();
+            super::retain_layout(state, retained, None);
+        }
+        // Other tests may drop states concurrently. Every sweep must consume
+        // at least one new drop, regardless of how many live layouts we keep.
+        let sweeps = super::RETAINED_LAYOUT_SWEEPS.get() - sweeps_before;
+        let dropped = super::DROPPED_STATES
+            .load(std::sync::atomic::Ordering::Acquire)
+            .wrapping_sub(dropped_before);
+        assert!(sweeps <= dropped, "{sweeps} sweeps for {dropped} drops");
+        assert_eq!(
+            RETAINED_LAYOUTS.with(|layouts| layouts.borrow().len()),
+            8192
+        );
+
+        drop(states);
+        super::sweep_retained_layouts();
+        assert!(RETAINED_LAYOUTS.with(|layouts| layouts.borrow().is_empty()));
     }
 
     /// Tables are per thread and the drop count is global: a hand-over on
