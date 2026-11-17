@@ -76,6 +76,16 @@ for path in $added; do
 done
 [[ ! -d $src ]] || find "$src" -type d -empty -delete
 
+for path in $(git diff --name-only --diff-filter=U -- "$dst"); do
+  stages=$(git ls-files -u -- "$path" | awk '{print $3}' | sort -u | tr -d '\n')
+  [[ $stages == 3 ]] || continue
+  theirs=$(git rev-parse ":3:$path")
+  [[ $theirs == $(git rev-parse -q --verify "$vendor:$src/${path#"$dst"/}" || true) ]] || continue
+  [[ $theirs == $(git hash-object "$path") ]] || continue
+  git add "$path"
+  echo "added new file: $src/${path#"$dst"/} -> $path"
+done
+
 unresolved=$(git diff --name-only --diff-filter=U)
 if [[ -n $unresolved ]]; then
   echo "conflicts left for resolution (merge in progress):"

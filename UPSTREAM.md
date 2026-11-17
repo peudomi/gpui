@@ -136,8 +136,9 @@ kit-upstream/main ──merge──▶ vendor/gpui-component ──merge──�
   inside `crates/base`.
 - `main` merged it once and moved `crates/base` to `crates/gpui_base` in that
   merge. Later merges carry upstream's edits to existing files through git's
-  rename detection. Files upstream *adds* still arrive under `crates/base` and
-  are moved by hand. The fork changes below are ordinary commits on `main`.
+  rename detection. Files upstream *adds* arrive under `crates/base`, or under
+  `crates/gpui_base` as a `UA` file location conflict when git's directory
+  rename detection places them; `script/sync-gpui-base` handles both. The fork changes below are ordinary commits on `main`.
 - `git blame` on `crates/gpui_base` reaches upstream's commits. A path-limited
   `git log -- crates/gpui_base/...` stops at the first merge, as with any move;
   use `git log --follow` for one file.
@@ -190,8 +191,10 @@ adds the `kit-upstream` remote if missing, and then:
 2. merges `kit-upstream/main` into it in a temporary worktree, removes every
    path outside `crates/base`, and commits with the default message,
 3. merges `vendor/gpui-component` into the current branch, moves files that
-   upstream added under `crates/base` to `crates/gpui_base`, and commits with
-   the default message if nothing conflicts.
+   upstream added under `crates/base` to `crates/gpui_base`, accepts new files
+   that git already placed under `crates/gpui_base` (`UA` with only upstream's
+   side, identical to the vendor file), and commits with the default message if
+   nothing else conflicts.
 
 It exits 0 when the merge is committed or there was nothing new, 2 when
 conflicts in `crates/gpui_base` are left with the merge in progress, and 1 on
