@@ -138,7 +138,8 @@ kit-upstream/main ──merge──▶ vendor/gpui-component ──merge──�
   merge. Later merges carry upstream's edits to existing files through git's
   rename detection. Files upstream *adds* arrive under `crates/base`, or under
   `crates/gpui_base` as a `UA` file location conflict when git's directory
-  rename detection places them; `script/sync-gpui-base` handles both. The fork changes below are ordinary commits on `main`.
+  rename detection places them; `script/sync-gpui-base` handles both. The fork
+  changes below are ordinary commits on `main`.
 - `git blame` on `crates/gpui_base` reaches upstream's commits. A path-limited
   `git log -- crates/gpui_base/...` stops at the first merge, as with any move;
   use `git log --follow` for one file.
