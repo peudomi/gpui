@@ -1586,6 +1586,8 @@ impl WgpuRendererCore {
                         self.shader_quads.draw(range, &mut pass);
                         pass.set_bind_group(0, &self.resources().globals_bind_group, &[]);
                     }
+                    // Native views are only composited by the Metal renderer.
+                    PrimitiveBatch::NativeViews(_) => {}
                 }
             }
         }
