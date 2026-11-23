@@ -190,10 +190,7 @@ impl<T> RadialLine<T> {
             .collect()
     }
 
-    fn path(
-        &self,
-        bounds: &Bounds<Pixels>,
-    ) -> (Option<Path>, Option<Path>, Vec<PaintQuad>) {
+    fn path(&self, bounds: &Bounds<Pixels>) -> (Option<Path>, Option<Path>, Vec<PaintQuad>) {
         let points = self.points(bounds);
         let mut paint_dots = vec![];
 

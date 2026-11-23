@@ -10,25 +10,35 @@ use gpui::{App, ElementId, Entity, Path, Pixels, Point, Window};
 /// relative to the chart's origin. A plot keeps one cache per shape and paints
 /// through [`Line::paint_cached`](super::shape::Line::paint_cached) or
 /// [`Area::paint_cached`](super::shape::Area::paint_cached): the path is built
-/// once per shape key and origin.
+/// once per shape key, at a zero origin, and moved to the frame's origin on
+/// every paint.
 #[derive(Default)]
 pub struct PathCache {
-    key: Option<(u64, Point<Pixels>)>,
+    key: Option<u64>,
+    /// Built relative to a zero origin.
     path: Option<Path>,
 }
 
 impl PathCache {
     /// The path for `key` at `origin`. `build` runs only when the key or the
-    /// origin differs from the last call's.
+    /// origin differs from the last call's; it must build at `origin`.
+    ///
+    /// A finished [`Path`] can no longer be moved, so a path is reused only
+    /// while the shape stays at the same origin.
     pub fn get(
         &mut self,
         key: u64,
         origin: Point<Pixels>,
-        build: impl FnOnce(Point<Pixels>) -> Option<Path>,
+        build: impl FnOnce() -> Option<Path>,
     ) -> Option<Path> {
-        if self.key != Some((key, origin)) {
-            self.path = build(origin);
-            self.key = Some((key, origin));
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        origin.x.as_f32().to_bits().hash(&mut hasher);
+        origin.y.as_f32().to_bits().hash(&mut hasher);
+        let key = hasher.finish();
+        if self.key != Some(key) {
+            self.path = build();
+            self.key = Some(key);
         }
         self.path.clone()
     }
@@ -134,21 +144,28 @@ mod tests {
     fn builds_once_per_key_and_origin() {
         let mut cache = PathCache::default();
         let mut builds = 0;
-        for origin in [point(px(100.), px(50.)), point(px(100.), px(50.))] {
-            cache.get(1, origin, |_| {
-                builds += 1;
-                diagonal()
-            });
-        }
+        let origin = point(px(100.), px(50.));
+        cache.get(1, origin, || {
+            builds += 1;
+            diagonal()
+        });
+        assert!(
+            cache
+                .get(1, origin, || {
+                    builds += 1;
+                    diagonal()
+                })
+                .is_some()
+        );
         assert_eq!(builds, 1);
 
-        cache.get(1, point(px(200.), px(50.)), |_| {
+        cache.get(1, point(px(200.), px(50.)), || {
             builds += 1;
             diagonal()
         });
         assert_eq!(builds, 2);
 
-        cache.get(2, point(px(200.), px(50.)), |_| {
+        cache.get(2, point(px(200.), px(50.)), || {
             builds += 1;
             diagonal()
         });
