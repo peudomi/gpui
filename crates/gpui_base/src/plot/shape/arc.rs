@@ -232,7 +232,7 @@ impl Arc {
         .f32(self.inner_radius)
         .f32(self.outer_radius)
         .finish();
-        let path = cache.get(key, bounds.origin, |_| self.path(arc, bounds));
+        let path = cache.get(key, bounds.origin, || self.path(arc, bounds));
         if let Some(path) = path {
             window.paint_path(path, fill);
         }

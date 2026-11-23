@@ -638,6 +638,8 @@ mod tests {
         TestAppContext, VisualTestContext, Window, div, list, point, px,
     };
 
+    // A built `Path` no longer exposes its bounds, so only check that every
+    // corner's notch builds.
     #[test]
     fn corner_notch_paths_build_for_every_corner() {
         let width = px(200.);
@@ -652,7 +654,7 @@ mod tests {
         for (name, corner, x_dir, y_dir) in cases {
             assert!(
                 corner_notch_path(corner, x_dir, y_dir, radius).is_some(),
-                "{name}: the notch must build",
+                "{name}: the notch must build"
             );
         }
     }

@@ -230,21 +230,16 @@ impl<T> Line<T> {
         cache: &mut PathCache,
         window: &mut Window,
     ) {
-        let (dots, paint_dots) = self.dots(Point::default());
+        let (dots, paint_dots) = self.dots(bounds.origin);
         let mut key = ShapeKey::new((self.curve, self.stroke_width.as_f32().to_bits()));
         for dot in &dots {
             key.point(*dot);
         }
-        if let Some(path) = cache.get(key.finish(), bounds.origin, |origin| {
-            let dots: Vec<_> = dots.iter().map(|dot| *dot + origin).collect();
-            self.build_path(&dots)
-        }) {
+        if let Some(path) = cache.get(key.finish(), bounds.origin, || self.build_path(&dots)) {
             window.paint_path(path, self.stroke);
         }
         // Dots are quads: cheap, and positioned at this frame's origin.
         for dot in paint_dots {
-            let mut dot = dot;
-            dot.bounds.origin = dot.bounds.origin + bounds.origin;
             window.paint_quad(dot);
         }
     }

@@ -199,12 +199,12 @@ impl<T> Area<T> {
         // One miss builds both paths; the second cache takes the stroke from
         // the stash instead of building again.
         let mut stroke_path = None;
-        let fill_path = fill.get(key, bounds.origin, |_| {
+        let fill_path = fill.get(key, bounds.origin, || {
             let (area, stroke) = self.path(bounds);
             stroke_path = Some(stroke);
             area
         });
-        let line_path = line.get(key, bounds.origin, |_| {
+        let line_path = line.get(key, bounds.origin, || {
             stroke_path.take().unwrap_or_else(|| self.path(bounds).1)
         });
         if let Some(area) = fill_path {

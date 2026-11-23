@@ -9,7 +9,7 @@ exclude = ["examples/"]
 repository = "https://github.com/longbridge/gpui-kit"
 homepage = "https://gpui-kit.com"
 documentation = "https://docs.rs/gpui-base"
-version = "0.10.0"
+version = "0.11.0"
 publish = true
 edition.workspace = true
 
@@ -90,8 +90,8 @@ criterion = "0.8"
 gpui-base = { path = ".", features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support", "bench-support"] }
 gpui-fast = { workspace = true, features = ["test-support", "bench-support"] }
-gpui_platform = { workspace = true, features = ["bench-support"] }
-gpui-fast-platform = { workspace = true, features = ["bench-support"] }
+gpui_platform = { workspace = true, features = ["bench-support", "x11"] }
+gpui-fast-platform = { workspace = true, features = ["bench-support", "x11"] }
 # Same minor version as `gpui`'s own, so the crate is shared instead of
 # compiled twice: the test-support image helpers build `Frame`s.
 image = "0.25"
