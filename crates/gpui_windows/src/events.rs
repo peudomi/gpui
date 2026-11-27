@@ -28,6 +28,7 @@ pub(crate) const WM_GPUI_FORCE_UPDATE_WINDOW: u32 = WM_USER + 5;
 pub(crate) const WM_GPUI_KEYBOARD_LAYOUT_CHANGED: u32 = WM_USER + 6;
 pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
 pub(crate) const WM_GPUI_DISPLAYS_CHANGED: u32 = WM_USER + 10;
+pub(crate) const WM_GPUI_PRESENTABILITY_CHANGED: u32 = WM_USER + 11;
 
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
 
@@ -169,6 +170,7 @@ impl WindowsWindowInner {
                 self.handle_wintab_msg(handle, msg, wparam, lparam)
             }
             WM_GETOBJECT => self.handle_wm_getobject(wparam, lparam),
+            WM_GPUI_PRESENTABILITY_CHANGED => self.handle_presentability_changed(wparam),
             WM_GPUI_CURSOR_STYLE_CHANGED
             | WM_GPUI_FORCE_UPDATE_WINDOW
             | WM_GPUI_GPU_DEVICE_LOST => self.handle_gpui_events(handle, msg, wparam, lparam),
@@ -1380,6 +1382,17 @@ impl WindowsWindowInner {
             self.draw_window(handle, false);
         }
         None
+    }
+
+    /// The vsync thread saw the window become presentable or stop being so.
+    /// Cloaking, e.g. switching virtual desktops, sends the window no message
+    /// of its own.
+    fn handle_presentability_changed(self: &Rc<Self>, wparam: WPARAM) -> Option<isize> {
+        if wparam.0 != self.validation_number {
+            return None;
+        }
+        self.report_visibility();
+        Some(0)
     }
 
     // The window procedure can run while GPUI is updating this window (e.g.
