@@ -4,6 +4,10 @@
 //! colors, sizing, and motion belong to applications or the
 //! `gpui-component` façade.
 
+#[cfg(not(any(feature = "gpui-pre", feature = "gpui-fast")))]
+compile_error!(
+    "gpui-base needs a GPUI engine: enable the `gpui-pre` feature (the default) or `gpui-fast`"
+);
 #[cfg(feature = "gpui-fast")]
 extern crate gpui_fast as gpui;
 #[cfg(all(feature = "gpui-fast", test))]
@@ -117,6 +121,10 @@ pub use dialog::{
     DialogPopup, DialogTitle, DialogTrigger,
 };
 pub use element_ext::ElementExt;
+// Shared with `gpui-component`'s rows (menu items, command palette); not a
+// public API.
+#[doc(hidden)]
+pub use a11y_disabled::A11yDisabledExt;
 pub use event::{InteractiveElementExt, OngoingScrollExt};
 pub use focus_trap::FocusTrapElement;
 #[doc(hidden)]
